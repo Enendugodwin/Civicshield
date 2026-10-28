@@ -1,0 +1,3 @@
+# Local secrets and environments — never commit.
+.env
+backend/.venv/

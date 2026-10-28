@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "civicshield": {
+      "command": "<path-to-civicshield>/.venv/Scripts/python.exe",
+      "args": [
+        "<path-to-civicshield>/backend/mcp_server.py"
+      ],
+      "env": {
+        "CIVICSHIELD_API": "http://127.0.0.1:8000",
+        "CIVICSHIELD_ROLE": "admin"
+      }
+    }
+  }
+}

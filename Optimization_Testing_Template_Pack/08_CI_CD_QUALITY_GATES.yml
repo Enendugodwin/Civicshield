@@ -1,0 +1,46 @@
+# Generic CI/CD quality gates.
+# Map these values to your CI/CD platform.
+
+quality_gates:
+  unit_tests:
+    pass_rate: 100
+
+  integration_tests:
+    pass_rate: 100
+
+  regression_tests:
+    pass_rate: 100
+
+  security:
+    critical_findings_allowed: 0
+    high_findings_allowed: 0
+
+  code_quality:
+    lint_errors_allowed: 0
+    type_errors_allowed: 0
+
+  performance:
+    max_p95_ms: 500
+    max_p99_ms: 1000
+    max_error_rate_percent: 1.0
+
+  resources:
+    max_cpu_percent: 80
+    max_memory_percent: 80
+
+release:
+  require_all_gates: true
+  manual_override: false
+
+recommended_pipeline:
+  - build
+  - unit_tests
+  - static_analysis
+  - dependency_security_scan
+  - integration_tests
+  - functional_tests
+  - regression_tests
+  - performance_benchmark
+  - quality_gate
+  - package
+  - release

@@ -1,0 +1,998 @@
+{
+  "organization": "CivicShield demo municipal water utility",
+  "population_served": 18400,
+  "note": "Synthetic sample. Canonical demo data is backend/app/seed.py.",
+  "assets": [
+    {
+      "id": 1,
+      "name": "Admin Workstation",
+      "kind": "workstation",
+      "hostname": "adm-ws01",
+      "owner": "",
+      "os_name": "Windows 10",
+      "environment": "office",
+      "zone": "office",
+      "criticality": "critical",
+      "criticality_reason": "Holds admin credentials for billing service",
+      "status": "operational",
+      "evidence": {
+        "owner": "",
+        "os": {
+          "name": "Windows 10",
+          "supported": false
+        },
+        "identity": {
+          "privileged_accounts": [
+            {
+              "name": "admin",
+              "mfa": false,
+              "last_login": "2026-05-12T09:15:00Z",
+              "max_idle_days": 90
+            }
+          ],
+          "admin_count": 6,
+          "max_admins": 3,
+          "shared_admin_accounts": [
+            "administrator"
+          ],
+          "least_privilege_enforced": false
+        },
+        "endpoint": {
+          "edr_installed": false,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.5,
+          "baseline_verified": false
+        },
+        "criticality": "critical",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "",
+          "recovery_procedure": ""
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "adm-ws01"
+        },
+        "software": [
+          {
+            "name": "Windows 10",
+            "version": "10.0.19044",
+            "ecosystem": "windows"
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "name": "Operations Workstation",
+      "kind": "workstation",
+      "hostname": "ops-ws01",
+      "owner": "ops-team",
+      "os_name": "Windows 11",
+      "environment": "operations",
+      "zone": "plant",
+      "criticality": "high",
+      "criticality_reason": "Monitors treatment plant",
+      "status": "operational",
+      "evidence": {
+        "owner": "ops-team",
+        "os": {
+          "name": "Windows 11",
+          "supported": true
+        },
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.9,
+          "baseline_verified": true
+        },
+        "criticality": "high",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Reimage from gold image"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "ops-ws01"
+        },
+        "software": [
+          {
+            "name": "Windows 11",
+            "version": "10.0.22631",
+            "ecosystem": "windows"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Identity Server",
+      "kind": "directory",
+      "hostname": "idp01",
+      "owner": "it-team",
+      "os_name": "Ubuntu 22.04",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "critical",
+      "criticality_reason": "Authenticates all operators",
+      "status": "operational",
+      "evidence": {
+        "owner": "it-team",
+        "os": {
+          "name": "Ubuntu 22.04",
+          "supported": true
+        },
+        "identity": {
+          "privileged_accounts": [
+            {
+              "name": "root",
+              "mfa": true,
+              "last_login": "2026-10-01T00:00:00Z",
+              "max_idle_days": 90
+            }
+          ],
+          "admin_count": 2,
+          "max_admins": 3,
+          "least_privilege_enforced": true
+        },
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.95,
+          "baseline_verified": true
+        },
+        "criticality": "critical",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore the identity database from immutable backup and re-validate operator logins"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "idp01"
+        },
+        "software": [
+          {
+            "name": "openssh-server",
+            "version": "8.9p1-3ubuntu0.3",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "glibc",
+            "version": "2.35-0ubuntu3.8",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "openssl",
+            "version": "3.0.2-0ubuntu1.15",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "curl",
+            "version": "7.81.0-1ubuntu1.14",
+            "ecosystem": "deb"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Application Server",
+      "kind": "server",
+      "hostname": "app01",
+      "owner": "it-team",
+      "os_name": "Ubuntu 20.04",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "high",
+      "criticality_reason": "Hosts billing app",
+      "status": "operational",
+      "evidence": {
+        "owner": "it-team",
+        "os": {
+          "name": "Ubuntu 20.04",
+          "supported": false
+        },
+        "patch": {
+          "last_applied": "2026-08-18T02:10:00Z",
+          "max_age_days": 30
+        },
+        "network": {
+          "remote_admin_exposed": true,
+          "zone": "wan"
+        },
+        "firewall": {
+          "ingress": "0.0.0.0/0"
+        },
+        "services": {
+          "unnecessary": [
+            "telnet"
+          ]
+        },
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": false,
+          "monitoring_coverage": 0.4,
+          "baseline_verified": false
+        },
+        "criticality": "high",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Redeploy from image"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "app01"
+        },
+        "software": [
+          {
+            "name": "openssh-server",
+            "version": "8.2p1-4ubuntu0.5",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "openssl",
+            "version": "1.1.1f-1ubuntu2.20",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "log4j-core",
+            "version": "2.14.1",
+            "ecosystem": "maven",
+            "package": "org.apache.logging.log4j:log4j-core"
+          },
+          {
+            "name": "apache2",
+            "version": "2.4.49-4ubuntu1",
+            "ecosystem": "deb"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Database Server",
+      "kind": "database",
+      "hostname": "db01",
+      "owner": "it-team",
+      "os_name": "Ubuntu 22.04",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "critical",
+      "criticality_reason": "Stores billing + operations data",
+      "status": "operational",
+      "evidence": {
+        "owner": "it-team",
+        "os": {
+          "name": "Ubuntu 22.04",
+          "supported": true
+        },
+        "patch": {
+          "last_applied": "2026-10-20T00:00:00Z",
+          "max_age_days": 30
+        },
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.9,
+          "baseline_verified": true
+        },
+        "criticality": "critical",
+        "backup": {
+          "last_success": "2026-10-10T01:30:00Z",
+          "max_age_days": 7,
+          "immutable_backup": false,
+          "last_recovery_test": null,
+          "max_test_age_days": 90,
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore from backup-server"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "db01"
+        },
+        "software": [
+          {
+            "name": "openssh-server",
+            "version": "8.9p1-3ubuntu0.4",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "glibc",
+            "version": "2.35-0ubuntu3.8",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "curl",
+            "version": "7.81.0-1ubuntu1.14",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "postgresql-14",
+            "version": "14.5-0ubuntu0.22.04.1",
+            "ecosystem": "deb"
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "name": "Gateway Firewall",
+      "kind": "firewall",
+      "hostname": "gw01",
+      "owner": "net-team",
+      "os_name": "PAN-OS 11.0.0",
+      "environment": "edge",
+      "zone": "edge",
+      "criticality": "critical",
+      "criticality_reason": "Single ingress point",
+      "status": "operational",
+      "evidence": {
+        "owner": "net-team",
+        "os": {
+          "name": "PAN-OS 11.0.0",
+          "supported": true
+        },
+        "network": {
+          "remote_admin_exposed": false,
+          "zone": "edge"
+        },
+        "firewall": {
+          "ingress": "restricted"
+        },
+        "criticality": "critical",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore firewall config"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "gw01"
+        },
+        "software": [
+          {
+            "name": "pan-os",
+            "version": "11.0.0",
+            "ecosystem": "firmware"
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "name": "Backup Server",
+      "kind": "backup",
+      "hostname": "bkp01",
+      "owner": "it-team",
+      "os_name": "Ubuntu 22.04",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "high",
+      "criticality_reason": "All restores depend on it",
+      "status": "operational",
+      "evidence": {
+        "owner": "it-team",
+        "endpoint": {
+          "edr_installed": false,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.6,
+          "baseline_verified": true
+        },
+        "criticality": "high",
+        "backup": {
+          "last_success": "2026-10-25T00:00:00Z",
+          "max_age_days": 7,
+          "immutable_backup": true,
+          "last_recovery_test": "2026-05-05T00:00:00Z",
+          "max_test_age_days": 90,
+          "backups_required": false,
+          "backup_target": "",
+          "recovery_procedure": "Rebuild from offsite copy"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "bkp01"
+        },
+        "software": [
+          {
+            "name": "openssh-server",
+            "version": "9.0p1-1ubuntu0.1",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "glibc",
+            "version": "2.35-0ubuntu3.8",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "openssl",
+            "version": "3.0.2-0ubuntu1.15",
+            "ecosystem": "deb"
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "name": "Water Monitoring WS",
+      "kind": "workstation",
+      "hostname": "wmon01",
+      "owner": "ops-team",
+      "os_name": "Windows 11",
+      "environment": "operations",
+      "zone": "plant",
+      "criticality": "high",
+      "criticality_reason": "Reads plant sensors",
+      "status": "operational",
+      "evidence": {
+        "owner": "ops-team",
+        "os": {
+          "name": "Windows 11",
+          "supported": true
+        },
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.85,
+          "baseline_verified": true
+        },
+        "criticality": "high",
+        "backup": {
+          "backups_required": false,
+          "backup_target": "",
+          "recovery_procedure": ""
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "wmon01"
+        },
+        "software": [
+          {
+            "name": "Windows 11",
+            "version": "10.0.22631",
+            "ecosystem": "windows"
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "name": "Logging Server",
+      "kind": "monitoring",
+      "hostname": "log01",
+      "owner": "",
+      "os_name": "Ubuntu 22.04",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "moderate",
+      "criticality_reason": "Central log aggregation",
+      "status": "degraded",
+      "evidence": {
+        "owner": "",
+        "endpoint": {
+          "edr_installed": true,
+          "logging_enabled": true,
+          "monitoring_coverage": 0.3,
+          "baseline_verified": false
+        },
+        "criticality": "moderate",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": ""
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "log01"
+        },
+        "software": [
+          {
+            "name": "openssh-server",
+            "version": "8.9p1-3ubuntu0.1",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "glibc",
+            "version": "2.35-0ubuntu3.8",
+            "ecosystem": "deb"
+          },
+          {
+            "name": "curl",
+            "version": "7.81.0-1ubuntu1.14",
+            "ecosystem": "deb"
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "name": "Cloud Billing SaaS",
+      "kind": "external",
+      "hostname": "billing.vendor.example",
+      "owner": "finance",
+      "os_name": "n/a",
+      "environment": "external",
+      "zone": "external",
+      "criticality": "moderate",
+      "criticality_reason": "Offsite billing dependency",
+      "status": "operational",
+      "evidence": {
+        "owner": "finance",
+        "criticality": "moderate",
+        "backup": {
+          "backups_required": false,
+          "backup_target": "",
+          "recovery_procedure": "Vendor SLA"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "billing.vendor.example"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "name": "Core Network Switch",
+      "kind": "switch",
+      "hostname": "sw-core01",
+      "owner": "net-team",
+      "os_name": "Cisco IOS 15.2",
+      "environment": "core",
+      "zone": "core",
+      "criticality": "critical",
+      "criticality_reason": "Carries all core, office and plant network traffic",
+      "status": "operational",
+      "evidence": {
+        "owner": "net-team",
+        "os": {
+          "name": "Cisco IOS 15.2",
+          "supported": false
+        },
+        "network": {
+          "remote_admin_exposed": false,
+          "zone": "core"
+        },
+        "firewall": {
+          "ingress": "restricted"
+        },
+        "services": {
+          "unnecessary": []
+        },
+        "criticality": "critical",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore startup configuration from backup-server and validate uplinks"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "sw-core01"
+        },
+        "software": [
+          {
+            "name": "cisco-ios",
+            "version": "15.2",
+            "ecosystem": "firmware"
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "name": "Edge Router",
+      "kind": "router",
+      "hostname": "rtr-edge01",
+      "owner": "net-team",
+      "os_name": "RouterOS 7.11",
+      "environment": "edge",
+      "zone": "edge",
+      "criticality": "critical",
+      "criticality_reason": "Only network path to the ISP",
+      "status": "operational",
+      "evidence": {
+        "owner": "net-team",
+        "os": {
+          "name": "RouterOS 7.11",
+          "supported": true
+        },
+        "network": {
+          "remote_admin_exposed": false,
+          "zone": "edge"
+        },
+        "firewall": {
+          "ingress": "restricted"
+        },
+        "services": {
+          "unnecessary": []
+        },
+        "criticality": "critical",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore exported router configuration and re-establish the ISP link"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "rtr-edge01"
+        },
+        "software": [
+          {
+            "name": "routeros",
+            "version": "7.11",
+            "ecosystem": "firmware"
+          }
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "name": "Plant Distribution Switch",
+      "kind": "switch",
+      "hostname": "sw-plant01",
+      "owner": "ops-team",
+      "os_name": "Cisco IOS 15.2",
+      "environment": "operations",
+      "zone": "plant",
+      "criticality": "high",
+      "criticality_reason": "Connects plant sensors, monitoring and operator workstations",
+      "status": "operational",
+      "evidence": {
+        "owner": "ops-team",
+        "os": {
+          "name": "Cisco IOS 15.2",
+          "supported": false
+        },
+        "network": {
+          "remote_admin_exposed": false,
+          "zone": "plant"
+        },
+        "firewall": {
+          "ingress": "restricted"
+        },
+        "services": {
+          "unnecessary": []
+        },
+        "criticality": "high",
+        "backup": {
+          "backups_required": true,
+          "backup_target": "backup-server",
+          "recovery_procedure": "Restore startup configuration from backup-server"
+        },
+        "collector": {
+          "source": "seed-fixture",
+          "version": "1.1.0",
+          "collected_at": 1793139042.0169034,
+          "hostname": "sw-plant01"
+        },
+        "software": [
+          {
+            "name": "cisco-ios",
+            "version": "15.2",
+            "ecosystem": "firmware"
+          }
+        ]
+      }
+    }
+  ],
+  "services": [
+    {
+      "id": 1,
+      "name": "Safe Water Delivery",
+      "zone": "central",
+      "population_served": 18400,
+      "rto_minutes": 240,
+      "recovery_procedure": "Restore app01 then db01 then gw01; validate pressure telemetry before reopening supply"
+    },
+    {
+      "id": 2,
+      "name": "Billing Service",
+      "zone": "office",
+      "population_served": 18400,
+      "rto_minutes": 480,
+      "recovery_procedure": ""
+    },
+    {
+      "id": 3,
+      "name": "Plant Monitoring",
+      "zone": "plant",
+      "population_served": 18400,
+      "rto_minutes": 120,
+      "recovery_procedure": "Restart wmon01 sensor feed and verify plant telemetry in the operations console"
+    }
+  ],
+  "relationships": [
+    {
+      "source_type": "asset",
+      "source_id": 4,
+      "target_type": "asset",
+      "target_id": 5,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 4,
+      "target_type": "asset",
+      "target_id": 6,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 5,
+      "target_type": "asset",
+      "target_id": 7,
+      "rel": "backed_by"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 1,
+      "target_type": "asset",
+      "target_id": 3,
+      "rel": "authenticates_via"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 2,
+      "target_type": "asset",
+      "target_id": 3,
+      "rel": "authenticates_via"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 4,
+      "target_type": "service",
+      "target_id": 2,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 5,
+      "target_type": "service",
+      "target_id": 2,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 6,
+      "target_type": "service",
+      "target_id": 1,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 3,
+      "target_type": "service",
+      "target_id": 1,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 2,
+      "target_type": "service",
+      "target_id": 3,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 8,
+      "target_type": "service",
+      "target_id": 3,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 12,
+      "target_type": "asset",
+      "target_id": 6,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 11,
+      "target_type": "asset",
+      "target_id": 12,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 13,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 3,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 4,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 5,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 7,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 9,
+      "target_type": "asset",
+      "target_id": 11,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 2,
+      "target_type": "asset",
+      "target_id": 13,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 8,
+      "target_type": "asset",
+      "target_id": 13,
+      "rel": "depends_on"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 11,
+      "target_type": "service",
+      "target_id": 1,
+      "rel": "supplies"
+    },
+    {
+      "source_type": "asset",
+      "source_id": 12,
+      "target_type": "service",
+      "target_id": 1,
+      "rel": "supplies"
+    }
+  ],
+  "incidents": [
+    {
+      "title": "Invoice-themed phishing reported by finance",
+      "status": "investigating",
+      "severity": "medium",
+      "commander": "IT Duty Officer",
+      "age_hours": 3,
+      "events": [
+        [
+          "observed",
+          "Finance forwarded an invoice email from a lookalike billing domain; no attachment was opened."
+        ],
+        [
+          "evidence",
+          "Sender domain was registered four days ago and failed SPF and DKIM checks."
+        ],
+        [
+          "interpretation",
+          "Consistent with business email compromise reconnaissance; no credential entry was reported."
+        ],
+        [
+          "suggestion",
+          "Block the sender domain at the mail gateway and reset the recipient's active sessions."
+        ],
+        [
+          "decision",
+          "Email gateway block approved by the IT duty officer."
+        ]
+      ]
+    },
+    {
+      "title": "Unexpected privileged login on app01",
+      "status": "contained",
+      "severity": "high",
+      "commander": "IT Operations Lead",
+      "age_hours": 26,
+      "events": [
+        [
+          "observed",
+          "A privileged login to app01 originated from the office VLAN outside the maintenance window."
+        ],
+        [
+          "evidence",
+          "Authentication logs show a valid administrator account; MFA status is unknown in the collected evidence."
+        ],
+        [
+          "interpretation",
+          "Possible credential misuse; administrator error cannot yet be excluded."
+        ],
+        [
+          "suggestion",
+          "Rotate the administrator credential and review commands executed during the session."
+        ],
+        [
+          "decision",
+          "Containment approved: credential rotated and the session terminated."
+        ]
+      ]
+    },
+    {
+      "title": "Database backup window missed twice",
+      "status": "open",
+      "severity": "high",
+      "commander": "",
+      "age_hours": 52,
+      "events": [
+        [
+          "observed",
+          "The db01 nightly backup failed on two consecutive runs."
+        ],
+        [
+          "evidence",
+          "The backup server reports insufficient free space on the repository volume."
+        ],
+        [
+          "suggestion",
+          "Free repository space, rerun the backup and verify a restore before closing."
+        ]
+      ]
+    }
+  ],
+  "threat_indicators": [
+    {
+      "value": "billing-verify.example",
+      "kind": "domain",
+      "confidence": "high",
+      "source": "CommunityShield member report (verified, privacy-preserving)",
+      "days": 60
+    },
+    {
+      "value": "invoice-portal.example",
+      "kind": "domain",
+      "confidence": "medium",
+      "source": "Municipal email gateway observation",
+      "days": 30
+    },
+    {
+      "value": "invoice-themed credential phishing",
+      "kind": "campaign",
+      "confidence": "medium",
+      "source": "Regional water-sector information exchange",
+      "days": 90
+    }
+  ]
+}

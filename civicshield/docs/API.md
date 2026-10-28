@@ -1,0 +1,20 @@
+# API
+
+Base `/api`. Health `GET /api/health` (includes AI status). Demo account: `GET /api/me` (username, role, permissions; the `X-Role` header is a demo control, not production authentication).
+
+Auth: `Authorization: Bearer <token>` demo tokens or `X-Role: admin|operator|viewer`. Viewer is read-only; writes need operator, deletes/admin actions need admin.
+
+- Assets: `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/{id}`, `POST /api/assets/import` (`{csv_text, dry_run}`; 200-row / 256 KB limits, duplicate detection, preview-before-accept). `GET /api/assets/{id}/evidence` returns stored evidence and collection metadata; `POST /api/assets/{id}/evidence` accepts a read-only collector payload (operator role). New devices start with empty evidence and are reported as `UNKNOWN` until collected.
+- Services: `GET /api/services`.
+- Relationships: `GET/POST /api/relationships`, `DELETE /api/relationships/{id}` (duplicates rejected 409).
+- Detection: `POST /api/detect` (`{asset_ids?, online?}`), `POST /api/assets/{id}/detect`, `GET /api/detection/posture` (evidence coverage, advisory snapshot, last run). Detection combines the deterministic BaselineGuard controls with version-based CVE matching; only FAIL controls and vulnerability matches become findings.
+- Assessments: `POST /api/assessments/run` (upserts findings by rule+asset, reopens still-present resolved findings), `GET /api/assessments` (includes `scope`), `GET /api/assessments/{id}` (+`/export?format=json|csv`, CSV formula-injection guarded).
+- Findings: `GET /api/findings`, `GET /api/findings/{id}`, `PATCH /api/findings/{id}` (`workflow: open|acknowledged|investigating|resolved|false_positive`, assignee, reason required to resolve/dismiss), `POST /api/findings/{id}/explain`, `POST /api/findings/{id}/remediation-plan`.
+- Risk & impact: `GET /api/risk/{finding_id}` (score, factors, model version), `GET /api/impact?asset_id=` (downstream assets, affected services counted once by ID with dependency paths), `GET /api/identity` (privileged-account inventory, MFA coverage with unknown-not-disabled rule).
+- Remediation: `POST /api/remediation/propose|/{id}/approve|/{id}/simulate|/{id}/verify|/{id}/reject|/{id}/reopen`, `GET /api/remediation/{id}/audit`, legacy aliases `POST /api/remediation-plans/{id}/approve|/simulate`, apply-simulated-fix `POST /api/remediation/{id}/apply`.
+- Recovery: `POST /api/recovery/scenarios` (7 scenarios incl. gateway/monitoring/backup loss, dual failure), `POST /api/recovery/runs`, `GET /api/recovery/runs/{id}`, `GET /api/recovery/readiness` (per-service criteria with failed-criteria listing).
+- Incidents: `POST/GET /api/incidents` (severity, commander), `GET/PATCH /api/incidents/{id}`, `POST /api/incidents/{id}/events` (observed|evidence|interpretation|suggestion|decision), `POST|DELETE /api/incidents/{id}/findings/{fid}`, `GET /api/incidents/{id}/report`, `POST /api/incidents/{id}/summary` (AI with deterministic fallback).
+- Threat intel: `GET/POST /api/threat-indicators` (duplicates rejected 409, expiry flagged).
+- Reports: `GET /api/reports/posture` (executive summary with provenance metadata), `GET /api/reports/assessment` (CSV), `GET /api/reports/recovery` (JSON). `GET /api/audit`.
+- Evidence review: `GET /api/review/posture?focus=all|vulnerability|identity|backup|network&audience=technical|executive` returns counts, top findings, readiness, recommendations and a markdown review. This is the review used by the MCP server; it is deterministic and does not invent evidence.
+- Demo: `POST /api/demo/reset` (reseed deterministic baseline).
