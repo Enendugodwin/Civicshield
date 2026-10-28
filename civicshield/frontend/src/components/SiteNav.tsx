@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import {
-  Activity, FileText, Gauge, LayoutDashboard, Network, Radar, RefreshCw,
+  Activity, Bot, FileText, Gauge, LayoutDashboard, Network, Radar, RefreshCw,
   Server, Settings, ShieldAlert, ShieldCheck, Siren, Wrench,
 } from 'lucide-react';
 
@@ -32,6 +32,7 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { label: 'Assessments', icon: Activity, to: '/assessments' },
       { label: 'Findings & Risk', icon: ShieldAlert, to: '/findings' },
       { label: 'Remediation', icon: Wrench, to: '/remediation' },
+      { label: 'AI Assistant', icon: Bot, to: '/assistant' },
     ],
   },
   {

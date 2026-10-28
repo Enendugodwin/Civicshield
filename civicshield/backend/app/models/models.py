@@ -232,3 +232,43 @@ class AuditEvent(Base):
     actor = Column(String, default="")
     action = Column(String, default="")
     detail = Column(Text, default="")
+
+
+class Conversation(Base):
+    """Assistant chat thread. user_id is the demo role string (admin/operator/viewer)."""
+    __tablename__ = "ai_conversations"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, default="")
+    title = Column(String, default="New conversation")
+    summary = Column(Text, default="")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class ChatMessage(Base):
+    __tablename__ = "ai_messages"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, default=0)
+    role = Column(String, default="user")  # user|assistant|tool
+    content = Column(Text, default="")
+    meta_json = Column(Text, default="{}")
+    created_at = Column(Float, default=_ts)
+
+
+class AITask(Base):
+    """Assistant-proposed action awaiting approval and execution."""
+    __tablename__ = "ai_tasks"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, default=0)
+    requested_by = Column(String, default="")
+    task_type = Column(String, default="")
+    target_json = Column(Text, default="{}")
+    status = Column(String, default="pending_approval")
+    requires_approval = Column(Integer, default=1)
+    approved_by = Column(String, default="")
+    result_json = Column(Text, default="{}")
+    error_summary = Column(Text, default="")
+    correlation_id = Column(String, default="")
+    created_at = Column(Float, default=_ts)
+    started_at = Column(Float, default=0.0)
+    completed_at = Column(Float, default=0.0)

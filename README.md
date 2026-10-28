@@ -72,6 +72,34 @@ table, and recovery objectives.
 
 ![Service health](civicshield/docs/screenshots/11-service-health.png)
 
+**AI Assistant** — conversational chat grounded in live records. Ask about
+assets, findings, incidents, threats, and recovery; the live model rephrases
+verified context (deterministic template offline). Write actions — create
+incidents, draft plans, assign tasks, run assessments or recovery
+simulations — always create a pending task first and execute only after
+your explicit approval, with role re-checks and audit entries.
+
+![AI assistant answering](civicshield/docs/screenshots/13-assistant-answer.png)
+
+![AI assistant task approval](civicshield/docs/screenshots/15-assistant-task-done.png)
+
+Every answer carries its engine badge — the live model id or `offline
+template` — and the message list scrolls inside the chat card while the
+composer stays put.
+
+![AI assistant model badge](civicshield/docs/screenshots/16-assistant-model-badge.png)
+
+## Appearance
+
+Three interface themes ship with the GUI — **Vault dark** (default),
+**Light**, and **High contrast** — switchable from the sidebar footer or
+the Appearance card in Settings. The choice is stored on the device
+(`cs_theme`) and applied before first paint, so there is no flash of the
+wrong theme on reload. All surfaces, charts, maps, and badges re-skin
+through CSS variables; no page code changes per theme.
+
+![Light theme](civicshield/docs/screenshots/theme-light-overview.png)
+
 ## Quickstart
 
 Backend (FastAPI, SQLite demo DB):

@@ -4,7 +4,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import time
+import uuid
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +16,15 @@ from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine, get_db
 from app.models.models import (
+    AITask,
     AssessmentResult,
     AssessmentRun,
     Asset,
     AssetRelationship,
     AuditEvent,
     BackupRecord,
+    ChatMessage,
+    Conversation,
     Finding,
     Incident,
     IncidentEvent,
@@ -1327,6 +1332,900 @@ def api_threat_sync(db: Session = Depends(get_db),
               "ok": not warnings,
               "note": "" if not warnings else "OSV.dev unreachable or incomplete; bundled advisories still apply."}
     return _write_sync(record)
+
+
+# ================= AI assistant (reommendations.md) =================
+# Conversational, environment-grounded assistant. Deterministic intent router
+# over real backend data; the live model only rephrases verified context and
+# the offline template answers when the provider is unavailable. Write tools
+# execute only after explicit approval and re-validated authorization.
+
+
+_ASSIST_SUGGESTIONS = [
+    "Give me an overview of my environment.",
+    "Which assets require attention?",
+    "Show me the latest critical findings.",
+    "What threats affect my assets?",
+    "Is recovery ready? Show the last run.",
+    "What can I ask you to do?",
+]
+
+
+def _assist_actor(authorization, x_role) -> str:
+    return role_of(authorization, x_role)
+
+
+def _assist_get_conv(db: Session, cid: int, user: str) -> Conversation:
+    conv = db.query(Conversation).filter(Conversation.id == cid,
+                                        Conversation.user_id == user).first()
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    return conv
+
+
+def _assist_audit(db: Session, actor: str, action: str, detail: str = "") -> None:
+    db.add(AuditEvent(actor=actor, action=action, detail=detail[:2000]))
+    db.commit()
+
+
+def _assist_msg(db: Session, cid: int, role: str, content: str, meta: dict | None = None) -> ChatMessage:
+    m = ChatMessage(conversation_id=cid, role=role, content=content,
+                    meta_json=json.dumps(meta or {}))
+    db.add(m)
+    conv = db.query(Conversation).filter(Conversation.id == cid).first()
+    if conv:
+        conv.updated_at = time.time()
+    db.commit()
+    db.refresh(m)
+    return m
+
+
+def _assist_last_asset(db: Session, conv: Conversation) -> int | None:
+    try:
+        return (json.loads(conv.summary or "{}") or {}).get("last_asset_id")
+    except (ValueError, AttributeError):
+        return None
+
+
+def _assist_remember_asset(db: Session, conv: Conversation, aid: int) -> None:
+    try:
+        data = json.loads(conv.summary or "{}") or {}
+    except ValueError:
+        data = {}
+    data["last_asset_id"] = aid
+    conv.summary = json.dumps(data)
+    db.commit()
+
+
+def _assist_resolve_asset(db: Session, ref: str):
+    """Resolve an asset reference to (asset, candidates). Never guesses."""
+    ref = (ref or "").strip().strip("#")
+    if not ref:
+        return None, []
+    if ref.isdigit():
+        a = db.query(Asset).filter(Asset.id == int(ref), Asset.retired == 0).first()
+        return (a, []) if a else (None, [])
+    lowered = ref.lower()
+    exact = db.query(Asset).filter(Asset.retired == 0).all()
+    hosts = [a for a in exact if (a.hostname or "").lower() == lowered
+             or (a.name or "").lower() == lowered]
+    if len(hosts) == 1:
+        return hosts[0], []
+    if len(hosts) > 1:
+        return None, hosts
+    partial = [a for a in exact if lowered in (a.hostname or "").lower()
+               or lowered in (a.name or "").lower()]
+    if len(partial) == 1:
+        return partial[0], []
+    return None, partial
+
+
+def _assist_open_findings(db: Session):
+    return (db.query(Finding)
+            .filter(~Finding.workflow.in_(("resolved", "false_positive")))
+            .order_by(Finding.id).all())
+
+
+# ---- read tools (viewer and above, execute immediately) ---------------------
+
+def _tool_environment_overview(db: Session, args: dict) -> dict:
+    assets = db.query(Asset).filter(Asset.retired == 0).all()
+    findings = _assist_open_findings(db)
+    crit = [f for f in findings if str(f.severity).lower() in ("critical", "high")]
+    incidents = db.query(Incident).all()
+    active_inc = [i for i in incidents if str(getattr(i, "status", "open")).lower() != "closed"]
+    from app import vuln_intel
+    confirmed = potential = 0
+    for adv in vuln_intel._advisories():
+        c, p, _u = _advisory_exposure(db, adv)
+        confirmed += len(c)
+        potential += len(p)
+    degraded = [a for a in assets if str(a.status).lower() != "operational"]
+    return {
+        "assets": len(assets), "degraded_assets": [a.name or a.hostname for a in degraded[:10]],
+        "open_findings": len(findings), "critical_high": len(crit),
+        "incidents": len(incidents), "active_incidents": len(active_inc),
+        "confirmed_exposure": confirmed, "potential_exposure": potential,
+        "advisories": len(vuln_intel._advisories()),
+    }
+
+
+def _tool_search_assets(db: Session, args: dict) -> dict:
+    q = str(args.get("query", "")).strip().lower()
+    if not q:
+        raise ValueError("query is required")
+    assets = db.query(Asset).filter(Asset.retired == 0).all()
+    hits = [a for a in assets if q in (a.name or "").lower()
+            or q in (a.hostname or "").lower() or q in (a.kind or "").lower()
+            or q in (a.zone or "").lower()][:20]
+    return {"matches": [{"id": a.id, "name": a.name, "hostname": a.hostname,
+                         "kind": a.kind, "status": a.status,
+                         "criticality": a.criticality} for a in hits]}
+
+
+def _tool_asset_details(db: Session, args: dict) -> dict:
+    asset, candidates = _assist_resolve_asset(db, str(args.get("ref", "")))
+    if asset is None:
+        return {"asset": None,
+                "candidates": [{"id": a.id, "name": a.name, "hostname": a.hostname}
+                               for a in candidates[:8]]}
+    ev = detection._evidence(asset)
+    findings = (db.query(Finding).filter(Finding.asset_id == str(asset.id)).all())
+    rels = (db.query(AssetRelationship)
+            .filter((AssetRelationship.source_id == str(asset.id))
+                    | (AssetRelationship.target_id == str(asset.id))).all())
+    return {"asset": {"id": asset.id, "name": asset.name, "hostname": asset.hostname,
+                      "kind": asset.kind, "zone": asset.zone, "status": asset.status,
+                      "owner": asset.owner, "criticality": asset.criticality,
+                      "os": (ev.get("os") or {}) if isinstance(ev, dict) else {}},
+            "open_findings": [{"id": f.id, "rule_id": f.rule_id, "severity": f.severity,
+                               "detail": (f.detail or "")[:300]} for f in findings
+                              if f.workflow not in ("resolved", "false_positive")][:10],
+            "relationships": len(rels)}
+
+
+def _tool_list_findings(db: Session, args: dict) -> dict:
+    sev = str(args.get("severity", "")).strip().lower()
+    asset_ref = str(args.get("asset", "")).strip()
+    findings = _assist_open_findings(db)
+    if sev:
+        findings = [f for f in findings if str(f.severity).lower() == sev]
+    if asset_ref:
+        asset, _c = _assist_resolve_asset(db, asset_ref)
+        if asset is None:
+            raise ValueError(f"unknown asset '{asset_ref}'")
+        findings = [f for f in findings if str(f.asset_id) == str(asset.id)]
+    out = [{"id": f.id, "rule_id": f.rule_id, "severity": f.severity,
+            "asset_id": f.asset_id, "detail": (f.detail or "")[:240]}
+           for f in findings[:25]]
+    return {"count": len(findings), "findings": out}
+
+
+def _tool_list_incidents(db: Session, args: dict) -> dict:
+    items = db.query(Incident).order_by(Incident.id.desc()).limit(20).all()
+    return {"incidents": [{"id": i.id, "title": i.title, "severity": i.severity,
+                           "status": getattr(i, "status", "open"),
+                           "commander": getattr(i, "commander", "")} for i in items]}
+
+
+def _tool_incident_details(db: Session, args: dict) -> dict:
+    try:
+        iid = int(str(args.get("id", "")).strip().strip("#"))
+    except ValueError:
+        raise ValueError("incident id must be a number")
+    i = db.query(Incident).filter(Incident.id == iid).first()
+    if not i:
+        raise ValueError(f"incident {iid} not found")
+    events = db.query(IncidentEvent).filter(IncidentEvent.incident_id == iid).all()
+    return {"incident": {"id": i.id, "title": i.title, "severity": i.severity,
+                         "status": getattr(i, "status", "open"),
+                         "commander": getattr(i, "commander", "")},
+            "events": len(events),
+            "recent": [{"kind": e.kind, "detail": (e.detail or "")[:200]} for e in events[-5:]]}
+
+
+def _tool_recovery_status(db: Session, args: dict) -> dict:
+    from app.models.models import RecoveryRun as RR
+    runs = db.query(RR).order_by(RR.id.desc()).limit(1).all()
+    last = None
+    if runs:
+        res = json.loads(runs[0].result_json)
+        m = res.get("metrics", {})
+        last = {"run_id": runs[0].id, "scenario": res.get("scenario", {}).get("id"),
+                "steps_success": m.get("steps_success"), "steps_failed": m.get("steps_failed"),
+                "rto_met": m.get("rto_met")}
+    ready = review.service_readiness(db)
+    ok = [s for s in ready if s.get("ready")]
+    return {"services_ready": f"{len(ok)}/{len(ready)}",
+            "not_ready": [s.get("service") for s in ready if not s.get("ready")][:8],
+            "last_run": last}
+
+
+def _tool_threats_summary(db: Session, args: dict) -> dict:
+    from app import vuln_intel
+    rows = []
+    for adv in vuln_intel._advisories():
+        c, p, _u = _advisory_exposure(db, adv)
+        if c or p:
+            rows.append({"id": adv.id, "title": adv.title, "severity": adv.severity,
+                         "known_exploited": adv.known_exploited,
+                         "confirmed": len(c), "potential": len(p),
+                         "assets": sorted({e["asset_name"] for e in c + p})[:6]})
+    rows.sort(key=lambda r: (not r["known_exploited"],
+                             {"critical": 0, "high": 1, "medium": 2, "low": 3}
+                             .get(str(r["severity"]).lower(), 4)))
+    return {"affecting_environment": len(rows), "top": rows[:8]}
+
+
+_ASSIST_READ_TOOLS = {
+    "environment_overview": {"level": 1, "confirm": False,
+                             "description": "Counts of assets, findings, incidents and threat exposure."},
+    "search_assets": {"level": 1, "confirm": False,
+                      "description": "Find assets by name, hostname, kind or zone."},
+    "asset_details": {"level": 1, "confirm": False,
+                      "description": "Full details, open findings and relationship count for one asset."},
+    "list_findings": {"level": 1, "confirm": False,
+                      "description": "Open findings, filterable by severity and asset."},
+    "list_incidents": {"level": 1, "confirm": False,
+                       "description": "Recent incidents with status and commander."},
+    "incident_details": {"level": 1, "confirm": False,
+                         "description": "One incident with event count and recent events."},
+    "recovery_status": {"level": 1, "confirm": False,
+                        "description": "Recovery readiness and the last simulation run."},
+    "threats_summary": {"level": 1, "confirm": False,
+                        "description": "Advisories affecting this environment, known-exploited first."},
+}
+
+_ASSIST_READ_FNS = {
+    "environment_overview": _tool_environment_overview,
+    "search_assets": _tool_search_assets,
+    "asset_details": _tool_asset_details,
+    "list_findings": _tool_list_findings,
+    "list_incidents": _tool_list_incidents,
+    "incident_details": _tool_incident_details,
+    "recovery_status": _tool_recovery_status,
+    "threats_summary": _tool_threats_summary,
+}
+
+
+# ---- write tools (operator+, always confirmed, executed on approval) --------
+
+def _wtool_create_incident(db: Session, actor: str, args: dict) -> dict:
+    title = str(args.get("title", "")).strip()
+    if not title:
+        raise ValueError("title is required")
+    severity = str(args.get("severity", "medium")).strip().lower()
+    if severity not in ("critical", "high", "medium", "low"):
+        raise ValueError("severity must be critical, high, medium or low")
+    row = Incident(title=title[:200], severity=severity)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"incident_id": row.id, "title": row.title, "severity": row.severity}
+
+
+def _wtool_propose_plan(db: Session, actor: str, args: dict) -> dict:
+    try:
+        fid = int(str(args.get("finding_id", "")).strip().strip("#"))
+    except ValueError:
+        raise ValueError("finding_id must be a number")
+    f = db.query(Finding).filter(Finding.id == fid).first()
+    if not f:
+        raise ValueError(f"finding {fid} not found")
+    from app.fixpilot_router import ProposeRequest
+    from app.fixpilot_router import propose as _propose
+    rec = _propose(ProposeRequest(
+        finding_id=str(f.id), rule_id=f.rule_id or "UNKNOWN", title=f.rule_id or "",
+        severity=f.severity or "unknown", asset_id=str(f.asset_id or ""),
+        evidence=[f.detail] if f.detail else []), x_role=actor)
+    return {"plan_id": rec.id, "finding_id": f.id, "status": rec.status}
+
+
+def _wtool_assign_task(db: Session, actor: str, args: dict) -> dict:
+    pid = str(args.get("plan_id", "")).strip()
+    owner = str(args.get("owner", "")).strip()
+    if not pid or not owner:
+        raise ValueError("plan_id and owner are required")
+    from app.fixpilot_router import TaskRequest
+    from app.fixpilot_router import set_task as _set_task
+    rec = _set_task(pid, TaskRequest(owner=owner,
+                                    due_date=str(args.get("due_date", "")).strip(),
+                                    note=str(args.get("note", "")).strip(),
+                                    actor=actor), x_role=actor)
+    if rec is None:
+        raise ValueError(f"plan {pid} not found")
+    return {"plan_id": rec.id, "owner": owner}
+
+
+def _wtool_run_assessment(db: Session, actor: str, args: dict) -> dict:
+    result = detection.run_detection(db, scope="all", actor=actor)
+    return {"run_id": result.get("run_id"), "assets": result.get("assets"),
+            "fail": result.get("fail"), "vulnerabilities": result.get("vulnerabilities")}
+
+
+def _wtool_run_recovery(db: Session, actor: str, args: dict) -> dict:
+    sid = str(args.get("scenario_id", "")).strip()
+    if sid not in SCENARIO_DEFS:
+        raise ValueError(f"unknown scenario '{sid}'")
+    res = api_recovery_run(ScenarioIn(scenario_id=sid), db)
+    m = res.get("metrics", {})
+    return {"run_id": res.get("run_id"), "scenario": sid,
+            "steps_success": m.get("steps_success"), "steps_failed": m.get("steps_failed")}
+
+
+_ASSIST_WRITE_TOOLS = {
+    "create_incident": {"level": 2, "confirm": True, "min_role": "operator",
+                        "description": "Open a new incident with title and severity.",
+                        "impact": "Adds one incident record; nothing else changes."},
+    "propose_plan": {"level": 2, "confirm": True, "min_role": "operator",
+                     "description": "Draft a FixPilot remediation plan for an open finding.",
+                     "impact": "Creates a draft plan in proposed status; no execution."},
+    "assign_task": {"level": 2, "confirm": True, "min_role": "operator",
+                    "description": "Assign a remediation plan to an owner with optional due date.",
+                    "impact": "Updates plan task metadata; lifecycle status unchanged."},
+    "run_assessment": {"level": 3, "confirm": True, "min_role": "operator",
+                       "description": "Run a full detection assessment across all assets.",
+                       "impact": "Creates a new assessment run and findings; read-only against assets."},
+    "run_recovery": {"level": 3, "confirm": True, "min_role": "operator",
+                     "description": "Run a recovery simulation scenario.",
+                     "impact": "Simulated only; never touches production systems."},
+}
+
+_ASSIST_WRITE_FNS = {
+    "create_incident": _wtool_create_incident,
+    "propose_plan": _wtool_propose_plan,
+    "assign_task": _wtool_assign_task,
+    "run_assessment": _wtool_run_assessment,
+    "run_recovery": _wtool_run_recovery,
+}
+
+
+def _assist_run_read_tool(db: Session, tool_id: str, args: dict) -> dict:
+    fn = _ASSIST_READ_FNS.get(tool_id)
+    if not fn:
+        raise ValueError(f"unknown tool '{tool_id}'")
+    return fn(db, args or {})
+
+
+def _assist_execute_write(db: Session, actor: str, task: AITask) -> dict:
+    """Execute an approved write tool. Re-checks role immediately before acting."""
+    spec = _ASSIST_WRITE_TOOLS.get(task.task_type)
+    if not spec:
+        raise ValueError(f"unknown task type '{task.task_type}'")
+    require_role(spec["min_role"], actor)
+    args = json.loads(task.target_json or "{}")
+    return _ASSIST_WRITE_FNS[task.task_type](db, actor, args)
+
+
+# ---- deterministic intent router --------------------------------------------
+
+def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
+    """Route a message to an answer and optional task proposal.
+
+    Returns {kind, answer, refs, task?: {type, args, summary, impact}}.
+    Never invents data: every entity is resolved against the database first.
+    """
+    t = (text or "").strip()
+    low = t.lower()
+    if not t:
+        return {"kind": "answer",
+                "answer": "Tell me what to look into — for example: 'overview', "
+                          "'which assets need attention', or 'critical findings'.",
+                "refs": {}}
+
+    if re.search(r"\b(what can you (do|help)|capabilit|help\b|how do (you|this) work)", low):
+        lines = ["I can query this environment and, with your approval, act on it.",
+                 "", "Read (no confirmation needed):"]
+        for tid, spec in _ASSIST_READ_TOOLS.items():
+            lines.append(f"- {tid}: {spec['description']}")
+        lines.append("")
+        lines.append("Write (I always ask first, then you approve in chat):")
+        for tid, spec in _ASSIST_WRITE_TOOLS.items():
+            lines.append(f"- {tid} (level {spec['level']}): {spec['description']}")
+        lines += ["", "Try: 'overview', 'asset app01', 'critical findings', "
+                  "'run assessment', or 'create incident titled X'."]
+        return {"kind": "answer", "answer": "\n".join(lines), "refs": {}}
+
+    m = re.search(r"create (?:an? )?incident(?: titled | called | for |:)?(.+?)(?: severity (\w+))?\s*$", low)
+    if m and ("incident" in low):
+        title = (m.group(1) or "").strip().strip("\"'") or t
+        sev = (m.group(2) or "medium").lower()
+        if sev not in ("critical", "high", "medium", "low"):
+            sev = "medium"
+        return {"kind": "propose",
+                "answer": f"I'll open incident '{title}' with severity {sev}. Approve to create it.",
+                "refs": {},
+                "task": {"type": "create_incident",
+                         "args": {"title": title[:200], "severity": sev},
+                         "summary": f"Create incident '{title}' ({sev})",
+                         "impact": _ASSIST_WRITE_TOOLS["create_incident"]["impact"]}}
+
+    if re.search(r"\brun\b.{0,30}\b(assessment|assess|scan)\b", low) and "incident" not in low:
+        return {"kind": "propose",
+                "answer": "I'll run a full detection assessment across all assets. Approve to start it.",
+                "refs": {},
+                "task": {"type": "run_assessment", "args": {},
+                         "summary": "Run full detection assessment",
+                         "impact": _ASSIST_WRITE_TOOLS["run_assessment"]["impact"]}}
+
+    m = re.search(r"run (?:scenario|simulation|recovery)\s+([a-z0-9\-]+)", low)
+    if m or ("run" in low and "scenario" in low):
+        sid = (m.group(1) if m else "").strip()
+        if sid in SCENARIO_DEFS:
+            spec = SCENARIO_DEFS[sid]
+            return {"kind": "propose",
+                    "answer": f"I'll run the '{spec['name']}' simulation. Approve to start it.",
+                    "refs": {},
+                    "task": {"type": "run_recovery", "args": {"scenario_id": sid},
+                             "summary": f"Run recovery scenario '{sid}'",
+                             "impact": _ASSIST_WRITE_TOOLS["run_recovery"]["impact"]}}
+        known = ", ".join(sorted(SCENARIO_DEFS))
+        return {"kind": "answer",
+                "answer": f"Which scenario? Available: {known}. For example: 'run scenario gateway-loss'.",
+                "refs": {}}
+
+    m = re.search(r"(?:propose|generate|draft|create).{0,50}plan.{0,50}finding\s*#?(\d+)", low)
+    if not m:
+        m = re.search(r"plan for finding\s*#?(\d+)", low)
+    if m:
+        return {"kind": "propose",
+                "answer": f"I'll draft a remediation plan for finding #{m.group(1)}. Approve to generate it.",
+                "refs": {"finding_id": int(m.group(1))},
+                "task": {"type": "propose_plan", "args": {"finding_id": int(m.group(1))},
+                         "summary": f"Draft remediation plan for finding #{m.group(1)}",
+                         "impact": _ASSIST_WRITE_TOOLS["propose_plan"]["impact"]}}
+
+    m = re.search(r"assign\s+(plan-\S+)\s+(?:to\s+)?(.+?)(?:\s+due\s+(\d{4}-\d{2}-\d{2}))?\s*$", low)
+    if m:
+        return {"kind": "propose",
+                "answer": f"I'll assign {m.group(1)} to '{m.group(2).strip()}'. Approve to record it.",
+                "refs": {},
+                "task": {"type": "assign_task",
+                         "args": {"plan_id": m.group(1), "owner": m.group(2).strip(),
+                                  "due_date": m.group(3) or ""},
+                         "summary": f"Assign {m.group(1)} to {m.group(2).strip()}",
+                         "impact": _ASSIST_WRITE_TOOLS["assign_task"]["impact"]}}
+
+    m = re.search(r"\basset\s+#?([A-Za-z0-9_.\-]+)", low)
+    if not m or m.group(1).lower() in ("health", "status", "list", "all", "details"):
+        m = re.search(r"(?:host|server|machine|investigate|tell me about|details?(?: of| for| on)?)\s+([A-Za-z0-9_.\-]+)", low)
+    pron = re.search(r"\b(this|that|it|the asset|the server|the machine)\b", low)
+    ref = None
+    if m and m.group(1).lower() not in ("health", "status", "list", "all"):
+        ref = m.group(1)
+    elif pron:
+        last = _assist_last_asset(db, conv)
+        ref = str(last) if last else None
+        if not ref:
+            return {"kind": "answer",
+                    "answer": "Which asset? Give me a name, hostname, or id — for example 'asset app01'.",
+                    "refs": {}}
+    if ref:
+        asset, candidates = _assist_resolve_asset(db, ref)
+        if asset is None:
+            if candidates:
+                names = ", ".join(f"{a.name or a.hostname} (#{a.id})" for a in candidates[:8])
+                return {"kind": "answer",
+                        "answer": f"Multiple assets match '{ref}': {names}. Which one?",
+                        "refs": {}}
+            return {"kind": "answer",
+                    "answer": f"No asset matches '{ref}'. Search known names with 'search assets'.",
+                    "refs": {}}
+        d = _tool_asset_details(db, {"ref": str(asset.id)})
+        a = d["asset"]
+        lines = [f"{a['name']} ({a['hostname'] or 'no hostname'}) — {a['kind']}, "
+                 f"zone {a['zone']}, status {a['status']}, criticality {a['criticality']}.",
+                 f"Owner: {a['owner'] or 'unassigned'}. Relationships: {d['relationships']}."]
+        if d["open_findings"]:
+            lines.append(f"Open findings ({len(d['open_findings'])}):")
+            for f in d["open_findings"][:6]:
+                lines.append(f"- #{f['id']} {f['rule_id']} [{f['severity']}] {f['detail'][:140]}")
+        else:
+            lines.append("No open findings recorded for this asset.")
+        _assist_remember_asset(db, conv, asset.id)
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"asset_id": asset.id}}
+
+    if re.search(r"attention|unhealthy|offline|degraded|at.?risk|\bdown\b|needs?", low):
+        assets = db.query(Asset).filter(Asset.retired == 0).all()
+        bad = [a for a in assets if str(a.status).lower() != "operational"]
+        findings = _assist_open_findings(db)
+        crit_assets: dict[str, int] = {}
+        for f in findings:
+            if str(f.severity).lower() in ("critical", "high"):
+                crit_assets[str(f.asset_id)] = crit_assets.get(str(f.asset_id), 0) + 1
+        names = {str(a.id): (a.name or a.hostname) for a in assets}
+        lines = []
+        if bad:
+            lines.append(f"Non-operational assets ({len(bad)}): " +
+                         ", ".join(f"{a.name or a.hostname} ({a.status})" for a in bad[:10]))
+        else:
+            lines.append("All assets report operational status.")
+        if crit_assets:
+            lines.append("Assets with critical/high findings:")
+            for aid, n in sorted(crit_assets.items(), key=lambda x: -x[1])[:8]:
+                lines.append(f"- {names.get(aid, aid)}: {n}")
+        else:
+            lines.append("No critical or high findings open.")
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"asset_ids": [a.id for a in bad[:10]]}}
+
+    if "finding" in low:
+        msev = re.search(r"\b(critical|high|medium|low)\b", low)
+        mid = re.search(r"finding\s*#?(\d+)", low)
+        args: dict = {}
+        if msev:
+            args["severity"] = msev.group(1)
+        if mid:
+            f = db.query(Finding).filter(Finding.id == int(mid.group(1))).first()
+            if not f:
+                return {"kind": "answer",
+                        "answer": f"Finding #{mid.group(1)} does not exist.", "refs": {}}
+            return {"kind": "answer",
+                    "answer": f"Finding #{f.id}: {f.rule_id} [{f.severity}] on asset {f.asset_id}, "
+                              f"workflow {f.workflow}. Detail: {(f.detail or '')[:400]}",
+                    "refs": {"finding_id": f.id, "asset_id": f.asset_id}}
+        d = _tool_list_findings(db, args)
+        lines = [f"Open findings: {d['count']}."]
+        for f in d["findings"][:8]:
+            lines.append(f"- #{f['id']} {f['rule_id']} [{f['severity']}] asset {f['asset_id']}")
+        if d["count"] > 8:
+            lines.append(f"... and {d['count'] - 8} more. Narrow with a severity or asset.")
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"finding_ids": [f["id"] for f in d["findings"][:8]]}}
+
+    if "incident" in low:
+        mid = re.search(r"incident\s*#?(\d+)", low)
+        if mid:
+            try:
+                d = _tool_incident_details(db, {"id": mid.group(1)})
+            except ValueError:
+                return {"kind": "answer",
+                        "answer": f"Incident #{mid.group(1)} does not exist.", "refs": {}}
+            i = d["incident"]
+            return {"kind": "answer",
+                    "answer": f"Incident #{i['id']}: {i['title']} [{i['severity']}, {i['status']}], "
+                              f"commander: {i['commander'] or 'unassigned'}. "
+                              f"{d['events']} recorded events.",
+                    "refs": {"incident_id": i["id"]}}
+        d = _tool_list_incidents(db, {})
+        if not d["incidents"]:
+            return {"kind": "answer", "answer": "No incidents recorded.", "refs": {}}
+        lines = ["Recent incidents:"]
+        for i in d["incidents"][:8]:
+            lines.append(f"- #{i['id']} {i['title']} [{i['severity']}, {i['status']}]")
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"incident_ids": [i["id"] for i in d["incidents"][:8]]}}
+
+    if re.search(r"recover|readiness|rto|last (recovery )?run", low):
+        d = _tool_recovery_status(db, {})
+        lines = [f"Recovery readiness: {d['services_ready']} services ready."]
+        if d["not_ready"]:
+            lines.append("Not ready: " + ", ".join(d["not_ready"]))
+        if d["last_run"]:
+            lr = d["last_run"]
+            lines.append(f"Last run #{lr['run_id']} ({lr['scenario']}): "
+                         f"{lr['steps_success']} ok / {lr['steps_failed']} failed.")
+        else:
+            lines.append("No recovery run recorded yet.")
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"run_id": (d["last_run"] or {}).get("run_id")}}
+
+    if re.search(r"threat|advis|cve|kev|exploit|vulnerab", low):
+        d = _tool_threats_summary(db, {})
+        if not d["affecting_environment"]:
+            return {"kind": "answer",
+                    "answer": "No bundled advisory matches declared asset software. "
+                              "Assets without software inventory cannot be evaluated — "
+                              "see the Threats page for the full exposure table.",
+                    "refs": {}}
+        lines = [f"{d['affecting_environment']} advisories affect this environment. Top:"]
+        for r in d["top"][:6]:
+            kev = " (known exploited)" if r["known_exploited"] else ""
+            lines.append(f"- {r['id']} [{r['severity']}]{kev}: {r['confirmed']} confirmed, "
+                         f"{r['potential']} potential — {', '.join(r['assets'])}")
+        return {"kind": "answer", "answer": "\n".join(lines),
+                "refs": {"advisory_ids": [r["id"] for r in d["top"][:6]]}}
+
+    if re.search(r"overview|posture|summary|summary|status|environment|health|how are we", low):
+        d = _tool_environment_overview(db, {})
+        lines = [f"Environment: {d['assets']} assets "
+                 f"({len(d['degraded_assets'])} non-operational), "
+                 f"{d['open_findings']} open findings ({d['critical_high']} critical/high), "
+                 f"{d['active_incidents']} active incidents.",
+                 f"Threat exposure: {d['confirmed_exposure']} confirmed, "
+                 f"{d['potential_exposure']} potential across {d['advisories']} advisories."]
+        return {"kind": "answer", "answer": "\n".join(lines), "refs": {}}
+
+    return {"kind": "answer",
+            "answer": "I can't do that with the connected systems. I can query assets, findings, "
+                      "incidents, recovery and threats, and — with your approval — create incidents, "
+                      "draft remediation plans, assign tasks, run assessments, or run recovery "
+                      "simulations. Ask 'what can you do' for the full list.",
+            "refs": {}}
+
+
+def _assist_polish(question: str, context_answer: str) -> tuple[str, str]:
+    """Rephrase verified context with the live model; fall back to template."""
+    from app.ai import ai_service
+    from app.ai.muse_spark_adapter import ASSISTANT_SYSTEM, complete_text
+    from app.ai.config import load_ai_config
+    try:
+        res = complete_text(ASSISTANT_SYSTEM,
+                            f"Question: {question}\nVerified context:\n{context_answer}",
+                            load_ai_config())
+    except Exception:
+        return context_answer, "fallback"
+    if not res.ok:
+        return context_answer, "fallback"
+    return res.text, res.model_used
+
+
+def _assist_answer(db: Session, conv: Conversation, user_text: str,
+                   actor: str) -> tuple[str, dict | None, dict, str]:
+    """Run the router, create a pending task when proposed, return
+    (answer_text, task_row_or_None, refs, engine). Enforces role gates on
+    write tools. Engine is the live model id or 'fallback'."""
+    route = _assist_route(db, conv, user_text)
+    task_row = None
+    if route.get("kind") == "propose":
+        proposal = route["task"]
+        spec = _ASSIST_WRITE_TOOLS[proposal["type"]]
+        if actor not in ("admin", "operator") and spec["min_role"] == "operator":
+            return (f"That action needs an operator role — you are '{actor}'. "
+                    "Switch roles in the sidebar to proceed.", None, {}, "policy")
+        task_row = AITask(conversation_id=conv.id, requested_by=actor,
+                          task_type=proposal["type"],
+                          target_json=json.dumps(proposal["args"]),
+                          status="pending_approval", requires_approval=1,
+                          correlation_id=f"task-{uuid.uuid4().hex[:8]}")
+        db.add(task_row)
+        db.commit()
+        db.refresh(task_row)
+        _assist_audit(db, actor, "ai_task_proposed",
+                      f"{proposal['type']} corr={task_row.correlation_id}")
+        answer = route["answer"] + " Reply Approve (or use the task card) to proceed."
+    else:
+        answer = route["answer"]
+    refs = route.get("refs", {})
+    polished, model_used = _assist_polish(user_text, answer)
+    if task_row is not None:
+        polished += f"\n\nTask {task_row.correlation_id} is waiting for approval."
+    return polished, task_row, refs, model_used
+
+
+class AIConversationIn(BaseModel):
+    title: str = Field(default="", max_length=120)
+
+
+class AIMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AIRenameIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+def _assist_conv_out(db: Session, conv: Conversation) -> dict:
+    last = (db.query(ChatMessage).filter(ChatMessage.conversation_id == conv.id)
+            .order_by(ChatMessage.id.desc()).first())
+    return {"id": conv.id, "title": conv.title, "updated_at": conv.updated_at,
+            "preview": ((last.content if last else "")[:120])}
+
+
+@app.get("/api/ai/health")
+def api_ai_health():
+    """Assistant + provider availability. No secrets exposed."""
+    from app.ai import ai_service
+    st = ai_service.status()
+    tools = {**{k: {"level": v["level"], "confirm": v["confirm"]} for k, v in _ASSIST_READ_TOOLS.items()},
+             **{k: {"level": v["level"], "confirm": v["confirm"]} for k, v in _ASSIST_WRITE_TOOLS.items()}}
+    return {"assistant": "ready", "provider": st.get("provider"), "model_id": st.get("model_id"),
+            "model_available": st.get("model_available"), "mode": st.get("mode"),
+            "tools": tools}
+
+
+@app.get("/api/ai/capabilities")
+def api_ai_capabilities():
+    read = {k: {"description": v["description"], "level": v["level"],
+                "confirm": v["confirm"], "min_role": "viewer"}
+            for k, v in _ASSIST_READ_TOOLS.items()}
+    write = {k: {"description": v["description"], "level": v["level"],
+                 "confirm": v["confirm"], "min_role": v["min_role"],
+                 "impact": v["impact"]} for k, v in _ASSIST_WRITE_TOOLS.items()}
+    return {"read": read, "write": write,
+            "note": "Write tools require operator role and explicit approval in chat."}
+
+
+@app.post("/api/ai/conversations", status_code=201)
+def api_ai_conv_create(body: AIConversationIn | None = None,
+                       db: Session = Depends(get_db),
+                       authorization: str | None = Header(default=None),
+                       x_role: str | None = Header(default=None)):
+    user = _assist_actor(authorization, x_role)
+    conv = Conversation(user_id=user, title=(body.title if body and body.title else "New conversation")[:120])
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return _assist_conv_out(db, conv)
+
+
+@app.get("/api/ai/conversations")
+def api_ai_conv_list(db: Session = Depends(get_db),
+                     authorization: str | None = Header(default=None),
+                     x_role: str | None = Header(default=None)):
+    user = _assist_actor(authorization, x_role)
+    convs = (db.query(Conversation).filter(Conversation.user_id == user)
+             .order_by(Conversation.updated_at.desc()).all())
+    return [_assist_conv_out(db, c) for c in convs]
+
+
+@app.get("/api/ai/conversations/{cid}")
+def api_ai_conv_get(cid: int, db: Session = Depends(get_db),
+                    authorization: str | None = Header(default=None),
+                    x_role: str | None = Header(default=None)):
+    conv = _assist_get_conv(db, cid, _assist_actor(authorization, x_role))
+    msgs = (db.query(ChatMessage).filter(ChatMessage.conversation_id == cid)
+            .order_by(ChatMessage.id).all())
+    return {"id": conv.id, "title": conv.title, "updated_at": conv.updated_at,
+            "messages": [{"id": m.id, "role": m.role, "content": m.content,
+                          "meta": json.loads(m.meta_json or "{}")} for m in msgs]}
+
+
+@app.patch("/api/ai/conversations/{cid}")
+def api_ai_conv_rename(cid: int, body: AIRenameIn, db: Session = Depends(get_db),
+                       authorization: str | None = Header(default=None),
+                       x_role: str | None = Header(default=None)):
+    conv = _assist_get_conv(db, cid, _assist_actor(authorization, x_role))
+    conv.title = body.title.strip()[:120]
+    conv.updated_at = time.time()
+    db.commit()
+    return _assist_conv_out(db, conv)
+
+
+@app.delete("/api/ai/conversations/{cid}")
+def api_ai_conv_delete(cid: int, db: Session = Depends(get_db),
+                       authorization: str | None = Header(default=None),
+                       x_role: str | None = Header(default=None)):
+    conv = _assist_get_conv(db, cid, _assist_actor(authorization, x_role))
+    db.query(ChatMessage).filter(ChatMessage.conversation_id == cid).delete()
+    db.query(AITask).filter(AITask.conversation_id == cid).delete()
+    db.delete(conv)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/api/ai/conversations/{cid}/messages")
+def api_ai_message(cid: int, body: AIMessageIn, db: Session = Depends(get_db),
+                   authorization: str | None = Header(default=None),
+                   x_role: str | None = Header(default=None)):
+    actor = _assist_actor(authorization, x_role)
+    _check_rate(f"ai:{actor}")
+    conv = _assist_get_conv(db, cid, actor)
+    _assist_msg(db, cid, "user", body.content.strip())
+    if conv.title == "New conversation":
+        conv.title = body.content.strip()[:60] or "New conversation"
+        db.commit()
+    answer, task_row, refs, engine = _assist_answer(db, conv, body.content.strip(), actor)
+    meta = {"model_used": engine, "refs": refs}
+    if task_row is not None:
+        meta["task"] = {"id": task_row.id, "type": task_row.task_type,
+                        "status": task_row.status,
+                        "correlation_id": task_row.correlation_id}
+    m = _assist_msg(db, cid, "assistant", answer, meta)
+    return {"message": {"id": m.id, "role": "assistant", "content": answer, "meta": meta}}
+
+
+@app.get("/api/ai/conversations/{cid}/stream")
+def api_ai_stream(cid: int, message: str, db: Session = Depends(get_db),
+                  authorization: str | None = Header(default=None),
+                  x_role: str | None = Header(default=None)):
+    """SSE delivery of the assistant answer (EventSource-compatible)."""
+    from fastapi.responses import StreamingResponse
+    actor = _assist_actor(authorization, x_role)
+    _check_rate(f"ai:{actor}")
+    if not message or len(message) > 4000:
+        raise HTTPException(422, "message must be 1-4000 characters")
+    conv = _assist_get_conv(db, cid, actor)
+    _assist_msg(db, cid, "user", message.strip())
+    if conv.title == "New conversation":
+        conv.title = message.strip()[:60] or "New conversation"
+        db.commit()
+    answer, task_row, refs, engine = _assist_answer(db, conv, message.strip(), actor)
+    meta = {"model_used": engine, "refs": refs}
+    if task_row is not None:
+        meta["task"] = {"id": task_row.id, "type": task_row.task_type,
+                        "status": task_row.status,
+                        "correlation_id": task_row.correlation_id}
+    _assist_msg(db, cid, "assistant", answer, meta)
+
+    def gen():
+        for i in range(0, len(answer), 60):
+            yield f"data: {json.dumps({'chunk': answer[i:i + 60]})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'meta': meta})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/ai/tasks/{tid}")
+def api_ai_task_get(tid: int, db: Session = Depends(get_db),
+                    authorization: str | None = Header(default=None),
+                    x_role: str | None = Header(default=None)):
+    actor = _assist_actor(authorization, x_role)
+    task = db.query(AITask).filter(AITask.id == tid).first()
+    if not task:
+        raise HTTPException(404, "task not found")
+    _assist_get_conv(db, task.conversation_id, actor)
+    return {"id": task.id, "type": task.task_type, "status": task.status,
+            "target": json.loads(task.target_json or "{}"),
+            "result": json.loads(task.result_json or "{}"),
+            "error": task.error_summary, "correlation_id": task.correlation_id,
+            "approved_by": task.approved_by}
+
+
+@app.post("/api/ai/tasks/{tid}/approve")
+def api_ai_task_approve(tid: int, db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    """Approve and execute a pending task. Role re-checked at execution time."""
+    actor = _assist_actor(authorization, x_role)
+    task = db.query(AITask).filter(AITask.id == tid).first()
+    if not task:
+        raise HTTPException(404, "task not found")
+    conv = _assist_get_conv(db, task.conversation_id, actor)
+    if task.status != "pending_approval":
+        raise HTTPException(409, f"task is {task.status}, not pending approval")
+    spec = _ASSIST_WRITE_TOOLS.get(task.task_type)
+    if not spec:
+        raise HTTPException(422, "unknown task type")
+    require_role(spec["min_role"], actor)
+    task.status = "running"
+    task.started_at = time.time()
+    task.approved_by = actor
+    db.commit()
+    try:
+        result = _assist_execute_write(db, actor, task)
+    except (ValueError, HTTPException) as e:
+        task.status = "failed"
+        task.error_summary = getattr(e, "detail", str(e))[:500]
+        task.completed_at = time.time()
+        db.commit()
+        _assist_audit(db, actor, "ai_task_failed",
+                      f"{task.task_type} corr={task.correlation_id} err={task.error_summary[:200]}")
+        _assist_msg(db, conv.id, "tool",
+                    f"Task {task.correlation_id} failed: {task.error_summary}",
+                    {"task_id": task.id, "status": "failed"})
+        raise HTTPException(422, task.error_summary)
+    task.status = "completed"
+    task.result_json = json.dumps(result)
+    task.completed_at = time.time()
+    db.commit()
+    _assist_audit(db, actor, "ai_task_executed",
+                  f"{task.task_type} corr={task.correlation_id} result={json.dumps(result)[:300]}")
+    _assist_msg(db, conv.id, "tool",
+                f"Task {task.correlation_id} completed: {json.dumps(result)[:500]}",
+                {"task_id": task.id, "status": "completed", "result": result})
+    return {"id": task.id, "status": "completed", "result": result}
+
+
+@app.post("/api/ai/tasks/{tid}/cancel")
+def api_ai_task_cancel(tid: int, db: Session = Depends(get_db),
+                       authorization: str | None = Header(default=None),
+                       x_role: str | None = Header(default=None)):
+    actor = _assist_actor(authorization, x_role)
+    task = db.query(AITask).filter(AITask.id == tid).first()
+    if not task:
+        raise HTTPException(404, "task not found")
+    _assist_get_conv(db, task.conversation_id, actor)
+    if task.status != "pending_approval":
+        raise HTTPException(409, f"task is {task.status}, cannot cancel")
+    task.status = "cancelled"
+    task.completed_at = time.time()
+    db.commit()
+    _assist_audit(db, actor, "ai_task_cancelled",
+                  f"{task.task_type} corr={task.correlation_id}")
+    return {"id": task.id, "status": "cancelled"}
 
 
 @app.post("/api/demo/reset")

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Download, RefreshCcw, ShieldCheck, UserCog } from 'lucide-react';
+import { Download, Palette, RefreshCcw, ShieldCheck, UserCog } from 'lucide-react';
 import { api } from '../api';
 import { Badge, Empty, Err, Loading, Page, download } from '../components/ui';
+import { THEMES, applyTheme, getTheme, type ThemeId } from '../theme';
 
 export default function Settings() {
   const [audit, setAudit] = useState<any[]>([]);
@@ -11,6 +12,12 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('ALL');
   const [resetting, setResetting] = useState(false);
+  const [theme, setTheme] = useState<ThemeId>(getTheme());
+  const pickTheme = (next: ThemeId) => {
+    setTheme(next);
+    applyTheme(next);
+    setNote(`Theme set to ${THEMES.find((t) => t.id === next)?.label}. Preference saved on this device.`);
+  };
 
   const load = () => {
     setLoading(true);
@@ -51,7 +58,38 @@ export default function Settings() {
       {err && <Err msg={err} retry={load} />}
       {note && <p role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.07] px-3 py-2 text-[12px] text-emerald-200">{note}</p>}
 
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid gap-3 lg:grid-cols-4">
+        <div className="card">
+          <div className="mb-1.5 flex items-center gap-2">
+            <Palette size={15} className="text-slate-400" aria-hidden="true" />
+            <h2 className="text-[13px]">Appearance</h2>
+          </div>
+          <div className="grid gap-1.5" role="group" aria-label="Interface theme">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => pickTheme(t.id)}
+                aria-pressed={theme === t.id}
+                className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors ${theme === t.id ? 'border-accent bg-accent/[0.08]' : 'border-line bg-white/[0.02] hover:border-slate-500'}`}
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-5 w-5 shrink-0 rounded border border-line"
+                  style={{
+                    background: t.id === 'light'
+                      ? 'linear-gradient(135deg, #ffffff 55%, #cbd5e1 55%)'
+                      : t.id === 'contrast' ? '#000000' : 'linear-gradient(135deg, #192134 55%, #059669 55%)',
+                  }}
+                />
+                <span>
+                  <span className="block text-[12px] font-medium text-slate-200">{t.label}</span>
+                  <span className="block text-[10.5px] text-slate-500">{t.blurb}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="card">
           <div className="mb-1.5 flex items-center gap-2">
             <ShieldCheck size={15} className={aiOn ? 'text-emerald-300' : 'text-amber-300'} aria-hidden="true" />

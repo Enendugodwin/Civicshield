@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { AlertTriangle, Menu, X } from 'lucide-react';
 import SiteNav, { BrandMark } from './SiteNav';
+import { THEMES, applyTheme, getTheme, type ThemeId } from '../theme';
 
 function aiTone(status: string) {
   if (status === 'online' || status === 'Connected') return 'bg-accent-soft';
@@ -12,10 +13,15 @@ function aiTone(status: string) {
 export default function Layout({ aiStatus }: { aiStatus: string }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [role, setRole] = useState(localStorage.getItem('cs_role') ?? 'admin');
+  const [theme, setTheme] = useState<ThemeId>(getTheme());
   const changeRole = (next: string) => {
     setRole(next);
     localStorage.setItem('cs_role', next);
     window.location.reload();
+  };
+  const changeTheme = (next: ThemeId) => {
+    setTheme(next);
+    applyTheme(next);
   };
   return (
     <div className="flex min-h-screen bg-ink text-slate-300">
@@ -61,6 +67,17 @@ export default function Layout({ aiStatus }: { aiStatus: string }) {
               <option value="admin">admin</option>
               <option value="operator">operator</option>
               <option value="viewer">viewer</option>
+            </select>
+          </div>
+          <div className="mt-2 flex items-center gap-1.5">
+            <span className="text-[9px] uppercase tracking-[0.08em] text-slate-600">Theme</span>
+            <select
+              value={theme}
+              onChange={(e) => changeTheme(e.target.value as ThemeId)}
+              aria-label="Interface theme"
+              className="min-w-0 flex-1 rounded border border-line bg-surface px-1.5 py-1 font-mono text-[10px] text-slate-300"
+            >
+              {THEMES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
           </div>
           <div className="mt-1 text-[9.5px] tracking-[0.06em] text-slate-600">

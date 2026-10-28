@@ -4,15 +4,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        // CivicShield design tokens — vault dark blue + secure green
-        ink: '#0F172A',
-        rail: '#101A2D',
-        surface: '#192134',
-        raised: '#1F2A41',
-        field: '#16243C',
-        line: '#26344D',
-        primary: '#1E3A5F',
-        accent: { DEFAULT: '#059669', soft: '#34D399', dim: '#065F46' },
+        // CivicShield design tokens — channel variables so [data-theme]
+        // overrides in index.css can re-skin surfaces without touching pages.
+        // Opacity modifiers (bg-ink/90, border-line/70) keep working because
+        // Tailwind fills <alpha-value> from the channel triplet.
+        ink: 'rgb(var(--rgb-bg) / <alpha-value>)',
+        rail: 'rgb(var(--rgb-rail) / <alpha-value>)',
+        surface: 'rgb(var(--rgb-surface) / <alpha-value>)',
+        raised: 'rgb(var(--rgb-raised) / <alpha-value>)',
+        field: 'rgb(var(--rgb-field) / <alpha-value>)',
+        line: 'rgb(var(--rgb-line) / <alpha-value>)',
+        primary: 'rgb(var(--rgb-primary) / <alpha-value>)',
+        accent: {
+          DEFAULT: '#059669',
+          soft: 'rgb(var(--rgb-accent-soft) / <alpha-value>)',
+          dim: '#065F46',
+        },
       },
       fontFamily: {
         sans: ['"Fira Sans"', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],

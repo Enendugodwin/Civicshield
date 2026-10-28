@@ -17,6 +17,13 @@
     />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23059669'/%3E%3Cpath d='M16 6l7 3v6.4c0 4.4-2.9 8.3-7 9.6-4.1-1.3-7-5.2-7-9.6V9l7-3z' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E" />
     <title>CivicShield — Water Utility Resilience</title>
+    <script>
+      try {
+        var t = localStorage.getItem('cs_theme');
+        document.documentElement.dataset.theme =
+          t === 'light' || t === 'contrast' ? t : 'vault';
+      } catch (e) { document.documentElement.dataset.theme = 'vault'; }
+    </script>
   </head>
   <body>
     <div id="root"></div>

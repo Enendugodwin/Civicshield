@@ -4,6 +4,9 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './index.css';
 import Layout from './components/Layout';
 import { api } from './api';
+import { applyTheme, getTheme } from './theme';
+
+applyTheme(getTheme());
 
 // Route-level splitting: dashboard pulls Leaflet/Recharts, InfraMap pulls
 // ReactFlow — none of it belongs in the initial chunk (Optimization Pack §3).
@@ -14,6 +17,7 @@ const Assets = lazy(() => import('./pages/Assets'));
 const Assessments = lazy(() => import('./pages/Assessments'));
 const Findings = lazy(() => import('./pages/Findings'));
 const Remediation = lazy(() => import('./pages/Remediation'));
+const AIAssistant = lazy(() => import('./pages/AIAssistant'));
 const Recovery = lazy(() => import('./pages/Recovery'));
 const Incidents = lazy(() => import('./pages/Incidents'));
 const Threats = lazy(() => import('./pages/Threats'));
@@ -31,7 +35,7 @@ function App() {
       <Route index element={<Overview />} /><Route path="overview" element={<Overview />} />
       <Route path="service-health" element={<Dashboard />} /><Route path="map" element={<InfraMap />} />
       <Route path="assets" element={<Assets />} /><Route path="assessments" element={<Assessments />} />
-      <Route path="findings" element={<Findings />} /><Route path="remediation" element={<Remediation />} />
+      <Route path="findings" element={<Findings />} /><Route path="remediation" element={<Remediation />} /><Route path="assistant" element={<AIAssistant />} />
       <Route path="recovery" element={<Recovery />} /><Route path="incidents" element={<Incidents />} />
       <Route path="threats" element={<Threats />} /><Route path="reports" element={<Reports />} />
       <Route path="settings" element={<Settings />} />

@@ -6,18 +6,113 @@
    CivicShield design tokens — Minimalism & Swiss, vault blue + secure green.
    Source of truth: design-system/civicshield/MASTER.md
    ===================================================================== */
-:root {
+:root,
+[data-theme='vault'] {
   color-scheme: dark;
-  --color-bg: #0f172a;
-  --color-rail: #101a2d;
-  --color-surface: #192134;
-  --color-field: #16243c;
-  --color-line: #26344d;
+  --rgb-bg: 15 23 42;
+  --rgb-rail: 16 26 45;
+  --rgb-surface: 25 33 52;
+  --rgb-raised: 31 42 65;
+  --rgb-field: 22 36 60;
+  --rgb-line: 38 52 77;
+  --rgb-primary: 30 58 95;
+  --rgb-accent-soft: 52 211 153;
   --color-accent: #059669;
   --color-accent-text: #34d399;
   --color-muted: #94a3b8;
   --color-danger: #dc2626;
 }
+
+/* ---- Light theme: same tokens, paper surfaces, darkened text -------- */
+[data-theme='light'] {
+  color-scheme: light;
+  --rgb-bg: 238 242 247;
+  --rgb-rail: 226 232 240;
+  --rgb-surface: 255 255 255;
+  --rgb-raised: 248 250 252;
+  --rgb-field: 255 255 255;
+  --rgb-line: 203 213 225;
+  --rgb-primary: 30 58 95;
+  --rgb-accent-soft: 4 120 87;
+  --color-accent: #059669;
+  --color-accent-text: #047857;
+  --color-muted: #64748b;
+  --color-danger: #b91c1c;
+}
+[data-theme='light'] .text-slate-100 { color: #0f172a; }
+[data-theme='light'] .text-slate-200 { color: #1e293b; }
+[data-theme='light'] .text-slate-300 { color: #334155; }
+[data-theme='light'] .text-slate-400 { color: #475569; }
+[data-theme='light'] .text-slate-500 { color: #64748b; }
+[data-theme='light'] .text-slate-600 { color: #7c8aa0; }
+[data-theme='light'] .text-white { color: #0f172a; }
+[data-theme='light'] h1,
+[data-theme='light'] h2,
+[data-theme='light'] h3,
+[data-theme='light'] h4 { color: #0f172a; }
+[data-theme='light'] .kpi-value { color: #0f172a; }
+[data-theme='light'] .hover\:text-white:hover { color: #0f172a; }
+[data-theme='light'] .hover\:text-slate-100:hover { color: #0f172a; }
+[data-theme='light'] .hover\:text-slate-200:hover { color: #1e293b; }
+[data-theme='light'] .hover\:text-slate-300:hover { color: #334155; }
+[data-theme='light'] .bg-white\/\[0\.02\] { background-color: rgb(15 23 42 / 0.03); }
+[data-theme='light'] .bg-white\/\[0\.035\] { background-color: rgb(15 23 42 / 0.04); }
+[data-theme='light'] .bg-white\/\[0\.06\] { background-color: rgb(15 23 42 / 0.06); }
+[data-theme='light'] .hover\:bg-white\/5:hover { background-color: rgb(15 23 42 / 0.05); }
+[data-theme='light'] .border-slate-500 { border-color: #94a3b8; }
+[data-theme='light'] .border-slate-600 { border-color: #cbd5e1; }
+[data-theme='light'] .hover\:border-slate-500:hover { border-color: #64748b; }
+[data-theme='light'] .hover\:border-slate-600:hover { border-color: #94a3b8; }
+[data-theme='light'] .text-emerald-200,
+[data-theme='light'] .text-emerald-300 { color: #047857; }
+[data-theme='light'] .text-amber-200,
+[data-theme='light'] .text-amber-300 { color: #92400e; }
+[data-theme='light'] .text-red-200,
+[data-theme='light'] .text-red-300,
+[data-theme='light'] .text-red-400 { color: #b91c1c; }
+[data-theme='light'] .text-rose-200,
+[data-theme='light'] .text-rose-300 { color: #be123c; }
+[data-theme='light'] .text-amber-300\/90 { color: rgb(146 64 14 / 0.9); }
+[data-theme='light'] .card { box-shadow: 0 1px 2px rgb(15 23 42 / 0.08); }
+[data-theme='light'] .tbl tbody tr:hover { background: rgb(15 23 42 / 0.03); }
+[data-theme='light'] .skeleton { background-color: #e2e8f0; }
+[data-theme='light'] .leaflet-tile-pane { filter: none; }
+[data-theme='light'] .leaflet-control-attribution {
+  background: rgb(255 255 255 / 0.85) !important;
+  color: #64748b !important;
+}
+[data-theme='light'] .leaflet-bar a,
+[data-theme='light'] .leaflet-bar a:hover { color: #1e293b; }
+[data-theme='light'] .leaflet-tooltip { color: #1e293b; }
+[data-theme='light'] .rf-dark .react-flow__edge-text { fill: #475569; }
+[data-theme='light'] .rf-dark .react-flow__minimap { background: #e2e8f0; }
+[data-theme='light'] select.input option,
+[data-theme='light'] select option { background: #ffffff; color: #1e293b; }
+
+/* ---- High-contrast dark theme: pure-black base, brighter text ------ */
+[data-theme='contrast'] {
+  color-scheme: dark;
+  --rgb-bg: 0 0 0;
+  --rgb-rail: 5 8 15;
+  --rgb-surface: 10 14 24;
+  --rgb-raised: 17 24 39;
+  --rgb-field: 10 14 24;
+  --rgb-line: 100 116 139;
+  --rgb-primary: 30 58 95;
+  --rgb-accent-soft: 110 231 183;
+  --color-accent: #10b981;
+  --color-accent-text: #6ee7b7;
+  --color-muted: #cbd5e1;
+  --color-danger: #f87171;
+}
+[data-theme='contrast'] .text-slate-300 { color: #f1f5f9; }
+[data-theme='contrast'] .text-slate-400 { color: #e2e8f0; }
+[data-theme='contrast'] .text-slate-500 { color: #cbd5e1; }
+[data-theme='contrast'] .text-slate-600 { color: #cbd5e1; }
+[data-theme='contrast'] .card,
+[data-theme='contrast'] .kpi,
+[data-theme='contrast'] .tblwrap { border-width: 2px; }
+[data-theme='contrast'] :focus-visible { outline-width: 3px; }
 
 @layer base {
   html {
@@ -94,7 +189,7 @@
   }
   *::-webkit-scrollbar-thumb {
     background: #2c3d5a;
-    border: 2px solid var(--color-bg);
+    border: 2px solid rgb(var(--rgb-bg));
     border-radius: 999px;
   }
   *::-webkit-scrollbar-thumb:hover {
@@ -218,7 +313,7 @@
     @apply pr-6;
   }
   select option {
-    background: var(--color-surface);
+    background: rgb(var(--rgb-surface));
     color: #e2e8f0;
   }
 
@@ -314,7 +409,7 @@
   max-width: 100%;
 }
 .leaflet-container {
-  background: var(--color-bg);
+  background: rgb(var(--rgb-bg));
   font-size: 11px;
 }
 /* Dark cartography: desaturate + invert OSM tiles so the map belongs to the vault palette. */
@@ -331,29 +426,29 @@
 }
 .leaflet-bar a,
 .leaflet-bar a:hover {
-  background: var(--color-surface);
+  background: rgb(var(--rgb-surface));
   color: #e2e8f0;
-  border-bottom-color: var(--color-line);
+  border-bottom-color: rgb(var(--rgb-line));
 }
 .leaflet-bar a:hover {
   background: var(--color-field);
 }
 .leaflet-tooltip {
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
+  background: rgb(var(--rgb-surface));
+  border: 1px solid rgb(var(--rgb-line));
   color: #e2e8f0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 .leaflet-tooltip-top:before {
-  border-top-color: var(--color-line);
+  border-top-color: rgb(var(--rgb-line));
 }
 .recharts-cartesian-axis-tick-value {
   font-family: 'Fira Code', ui-monospace, monospace;
 }
 .rf-dark .react-flow__node {
-  background: var(--color-surface);
+  background: rgb(var(--rgb-surface));
   color: #e2e8f0;
-  border: 1px solid var(--color-line);
+  border: 1px solid rgb(var(--rgb-line));
   border-radius: 6px;
   padding: 6px 8px;
   font-size: 11px;
@@ -363,12 +458,12 @@
   font-size: 10px;
 }
 .rf-dark .react-flow__controls-button {
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-line);
+  background: rgb(var(--rgb-surface));
+  border-bottom: 1px solid rgb(var(--rgb-line));
   fill: #cbd5e1;
 }
 .rf-dark .react-flow__minimap {
-  background: var(--color-bg);
+  background: rgb(var(--rgb-bg));
 }
 
 /* ---- Touch / reduced motion ---------------------------------------- */
