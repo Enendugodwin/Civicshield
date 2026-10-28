@@ -1071,7 +1071,12 @@ def api_reports(rtype: str, db: Session = Depends(get_db)):
         return PlainTextResponse(buf.getvalue(), media_type="text/csv")
     from app.models.models import RecoveryRun as RR
     rows = db.query(RR).all()
-    return {"runs": [json.loads(r.result_json) for r in rows]}
+    runs = []
+    for r in rows:
+        item = json.loads(r.result_json)
+        item["run_id"] = r.id
+        runs.append(item)
+    return {"runs": runs}
 
 
 class IndicatorIn(BaseModel):

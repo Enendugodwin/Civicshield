@@ -28,7 +28,10 @@ export default function Recovery() {
     api.get('/api/assets').then((d: any) => setAssets(d.items ?? d ?? [])).catch(() => {});
     api.get('/api/reports/recovery').then((d: any) => {
       const list = d.runs ?? [];
-      if (list.length) setRun({ result: list[list.length - 1] });
+      if (list.length) {
+        const last = list[list.length - 1];
+        setRun({ result: last, run_id: last.run_id });
+      }
     }).catch(() => {});
   }, []);
 

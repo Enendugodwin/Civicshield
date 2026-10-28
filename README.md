@@ -25,6 +25,41 @@ approve → simulate → verify, with every step in the audit log.
 
 ![Remediation plan](civicshield/docs/screenshots/03-remediation-plan.png)
 
+**Threat Intelligence** — bundled advisory catalog correlated with declared
+asset software (confirmed / potential / unevaluated), feed-health with
+controlled OSV sync, search and severity filters, and per-advisory detail
+with vendor links and AI analysis grounded in internal matches.
+
+![Threat dashboard](civicshield/docs/screenshots/04-threats-dashboard.png)
+
+**Threat detail + AI analysis** — expand any advisory for CVSS, fixed
+version, affected assets with match evidence, the rules-based recommended
+action, and a live-model analysis stored to the Remediation queue.
+
+![Threat detail and AI analysis](civicshield/docs/screenshots/05-threat-detail-analysis.png)
+
+**RecoveryLab** — dependency-aware failure simulations with readiness,
+restoration order, and per-run metrics; history survives refresh so
+recommendations stay available on the latest run.
+
+![Recovery run](civicshield/docs/screenshots/06-recovery-run.png)
+
+**Recovery AI recommendations** — one FixPilot plan per affected asset with
+open findings (capped, honestly reported when findings are missing), each
+reviewable on the Remediation page.
+
+![Recovery recommendations](civicshield/docs/screenshots/07-recovery-recommendations.png)
+
+**Remediation tasks** — assign an owner, due date, and tracking note to any
+plan; task changes are audit-logged without moving the lifecycle state.
+
+![Remediation task assignment](civicshield/docs/screenshots/08-remediation-task.png)
+
+**Reports** — posture review plus JSON/CSV exports for posture,
+assessments, recovery runs, threat exposure, and the audit log.
+
+![Reports and exports](civicshield/docs/screenshots/09-reports-exports.png)
+
 ## Quickstart
 
 Backend (FastAPI, SQLite demo DB):
