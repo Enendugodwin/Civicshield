@@ -1,0 +1,23 @@
+# Secrets and local config
+.env
+*.pem
+*.key
+
+# Runtime data and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+civicshield/backend/data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Frontend build and deps
+civicshield/frontend/dist/
+civicshield/frontend/node_modules/
+
+# Test artifacts
+civicshield/backend/tests/tmp_*.db

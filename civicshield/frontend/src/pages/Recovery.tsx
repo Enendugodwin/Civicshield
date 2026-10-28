@@ -18,6 +18,8 @@ export default function Recovery() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<any>(null);
+  const [recs, setRecs] = useState<any[] | null>(null);
+  const [recLoading, setRecLoading] = useState(false);
 
   useEffect(() => {
     api.post('/api/recovery/scenarios', {}).then((d: any) => setScenarios(d.items ?? d ?? []))
@@ -33,10 +35,19 @@ export default function Recovery() {
   const start = async (id: any) => {
     setErr(''); setRunning(String(id));
     try {
-      setRun(null);
+      setRun(null); setRecs(null);
       const r = await api.post('/api/recovery/runs', { scenario_id: id });
       setRun(await api.get(`/api/recovery/runs/${r.id ?? r.run_id}`));
     } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setRunning(null); }
+  };
+
+  const recommend = async () => {
+    if (!run?.run_id || recLoading) return;
+    setErr(''); setRecLoading(true);
+    try {
+      const d = await api.post(`/api/recovery/runs/${run.run_id}/recommendations`, {});
+      setRecs(d.recommendations ?? []);
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setRecLoading(false); }
   };
 
   const view = run?.result ?? run;
@@ -168,7 +179,12 @@ export default function Recovery() {
             <div className="mb-2 flex flex-wrap items-baseline gap-2">
               <h2 className="text-[13px]">{run?.run_id ? `Run #${run.run_id}` : 'Latest simulated run'} — {view?.scenario?.name ?? view?.scenario?.id}</h2>
               <Badge text={m.steps_failed ? 'not ready' : 'ready'} />
-              <button className="btn-sec ml-auto"
+              <button className="btn-sec ml-auto" disabled={!run?.run_id || recLoading}
+                title={run?.run_id ? 'Generate AI recommendations for assets taken down in this run' : 'Re-run the scenario to generate recommendations'}
+                onClick={recommend}>
+                <ShieldAlert size={13} aria-hidden="true" /> {recLoading ? 'Generating…' : 'Generate AI recommendations'}
+              </button>
+              <button className="btn-sec"
                 onClick={() => download('/api/reports/recovery', 'recovery-report.json')}>
                 <Download size={13} aria-hidden="true" /> Export report
               </button>
@@ -194,6 +210,41 @@ export default function Recovery() {
               ))}
             </div>
           </div>
+
+          {recs && (
+            <div className="card">
+              <h2 className="mb-1 text-[13px]">AI recommendations for this run</h2>
+              <p className="mb-2 text-[11px] text-slate-500">
+                Generated from open findings on the affected assets. Each planned item is stored in the
+                remediation queue — review it on the <Link to="/remediation" className="text-accent-soft hover:underline">Remediation</Link> page.
+              </p>
+              {recs.length === 0 && <p className="text-[12px] text-slate-400">No affected assets in this run.</p>}
+              <div className="grid gap-2">
+                {recs.map((r: any) => (
+                  <div key={r.asset_id} className="rounded-md border border-line/70 bg-raised/30 px-2 py-1.5">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-[12px] font-medium text-slate-200">{r.asset_name ?? r.asset_id}</span>
+                      <Badge text={r.status === 'planned' ? 'planned' : 'no findings'} />
+                      {r.model_used && <span className="font-mono text-[10px] text-slate-500">model: {r.model_used}</span>}
+                      {r.plan_id && (
+                        <Link to="/remediation" className="ml-auto inline-flex items-center gap-1 text-[11px] text-accent-soft hover:underline">
+                          Open plan {r.plan_id} <ArrowRight size={12} aria-hidden="true" />
+                        </Link>
+                      )}
+                    </div>
+                    {r.status === 'planned' ? (
+                      <>
+                        <p className="mt-1 text-[12px] text-slate-300">{r.plain_language}</p>
+                        <p className="mt-0.5 text-[11.5px] text-slate-400">{r.corrective_action}</p>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-[12px] text-slate-400">{r.note}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {rtoRows.length > 0 && (
             <div className="card">

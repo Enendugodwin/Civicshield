@@ -41,7 +41,8 @@ def _open_finding(row: Finding, risk: RiskAssessment | None) -> Dict[str, Any]:
     }
 
 
-def _readiness(db: Session) -> List[Dict[str, Any]]:
+def service_readiness(db: Session) -> List[Dict[str, Any]]:
+    """Per-service recovery readiness against documented criteria (Function 14)."""
     out = []
     for service in db.query(Service).order_by(Service.id).all():
         deps = (db.query(AssetRelationship)
@@ -124,7 +125,7 @@ def build_review(db: Session, focus: str = "all", audience: str = "technical") -
     for result in results:
         outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1
     coverage = detection.posture(db)
-    readiness = _readiness(db)
+    readiness = service_readiness(db)
     cves = [f for f in rows if f["source"] == "vulnerability"]
     high = [f for f in rows if str(f["severity"]).lower() in ("critical", "high")]
     ready = sum(1 for r in readiness if r["ready"])

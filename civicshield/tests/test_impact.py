@@ -1,5 +1,9 @@
 """Pytest coverage for ImpactEngine scoring, priorities, traversal."""
-from civicshield.impact_engine import ImpactEngine, priority_for, traverse_service_impact
+from types import SimpleNamespace
+
+from civicshield.impact_engine import (
+    ImpactEngine, priority_for, split_relationships, traverse_service_impact,
+)
 
 EDGES = {"fw": ["app"], "app": ["db"], "db": []}
 SERVICES = {"billing": ["app", "db"], "water-ops": ["db"]}
@@ -70,3 +74,17 @@ def test_prioritize_orders_descending():
                             {"a": {"criticality": "low"},
                              "b": {"criticality": "critical"}})
     assert [x.asset_id for x in scored] == ["b", "a"]
+
+
+def _row(source_type, source_id, target_type, target_id):
+    return SimpleNamespace(source_type=source_type, source_id=source_id,
+                           target_type=target_type, target_id=target_id)
+
+
+def test_split_relationships_shared_by_endpoints():
+    rows = [_row("asset", 1, "asset", 2),
+            _row("asset", 1, "service", 9),
+            _row("service", 9, "asset", 1)]  # reverse direction ignored
+    edges, svc_deps = split_relationships(rows)
+    assert edges == {"1": ["2"]}
+    assert svc_deps == {"9": ["1"]}

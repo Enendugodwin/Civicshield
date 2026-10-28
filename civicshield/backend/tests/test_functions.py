@@ -136,6 +136,14 @@ def test_remediation_reopen():
     assert "plan_verified" in trail and "plan_approved" in trail
 
 
+def test_legacy_remediation_aliases_removed():
+    seed()
+    assert client.post("/api/remediation-plans/p1/approve",
+                       json={"actor": "op"}, headers=OP).status_code == 404
+    assert client.post("/api/remediation-plans/p1/simulate",
+                       json={"actor": "op"}, headers=OP).status_code == 404
+
+
 def test_remediation_plan_fallback_stays_schema_valid(monkeypatch):
     from app.ai import ai_service
     from app.ai.schemas import RemediationPlanPayload

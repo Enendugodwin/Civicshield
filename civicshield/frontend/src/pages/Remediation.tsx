@@ -17,6 +17,9 @@ export default function Remediation() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [owner, setOwner] = useState('');
+  const [due, setDue] = useState('');
+  const [taskNote, setTaskNote] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -62,6 +65,14 @@ export default function Remediation() {
     setErr(''); setBusy(true);
     try {
       const r = await api.post(`/api/remediation/${plan.id}/reopen`, { actor: 'operator' });
+      setPlan(r);
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(false); }
+  };
+  const assignTask = async () => {
+    if (!plan?.id) return;
+    setErr(''); setBusy(true);
+    try {
+      const r = await api.post(`/api/remediation/${plan.id}/task`, { owner, due_date: due, note: taskNote, actor: 'operator' });
       setPlan(r);
     } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(false); }
   };
@@ -162,6 +173,26 @@ export default function Remediation() {
             <button className="btn-sec" onClick={() => applyFix()} disabled={busy || !['approved', 'simulated'].includes(plan.status)}>Apply simulated fix</button>
             <button className="btn-sec" onClick={() => act('reject')} disabled={busy}>Reject</button>
             {plan.status === 'verified' && <button className="btn-sec" onClick={() => reopen()} disabled={busy}>Reopen for rework</button>}
+          </div>
+          <div className="rounded-md border border-line/70 bg-raised/30 px-2.5 py-2">
+            <h3 className="mb-1 text-[11px] uppercase tracking-wide text-slate-500">Remediation task</h3>
+            {payload.task?.owner || payload.task?.due_date ? (
+              <p className="mb-1.5 text-[12px] text-slate-300">
+                Owner: <b>{payload.task.owner || '—'}</b> · Due: <b>{payload.task.due_date || '—'}</b>
+                {payload.task.note && <span className="text-slate-400"> · {payload.task.note}</span>}
+              </p>
+            ) : (
+              <p className="mb-1.5 text-[12px] text-slate-500">No owner assigned yet.</p>
+            )}
+            <div className="flex flex-col gap-1.5 sm:flex-row">
+              <input className="input sm:max-w-[11rem]" placeholder="Owner (team or person)" value={owner}
+                onChange={(e) => setOwner(e.target.value)} aria-label="Task owner" />
+              <input className="input sm:max-w-[10rem]" placeholder="Due YYYY-MM-DD" value={due}
+                onChange={(e) => setDue(e.target.value)} aria-label="Task due date" />
+              <input className="input flex-1" placeholder="Tracking note" value={taskNote}
+                onChange={(e) => setTaskNote(e.target.value)} aria-label="Task note" />
+              <button className="btn-sec" onClick={assignTask} disabled={busy || (!owner && !due && !taskNote)}>Assign</button>
+            </div>
           </div>
           {payload.applied_fix && (
             <div className="text-[12px] text-emerald-300">Simulated fix applied: {payload.applied_fix.note} (rule {payload.applied_fix.rule_id}, asset {payload.applied_fix.asset_id}). <Link className="underline" to="/assessments">Re-run the assessment</Link> to verify the finding flips to PASS, then record verification below.</div>

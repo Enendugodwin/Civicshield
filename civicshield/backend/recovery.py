@@ -25,16 +25,6 @@ class Scenario:
     description: str = ""
 
 
-SCENARIOS: List[Scenario] = [
-    Scenario("ransomware-db", "Database server ransomware",
-             "db-server", "Simulated ransomware on database server."),
-    Scenario("app-outage", "Application server unavailable",
-             "app-server", "Simulated app server outage."),
-    Scenario("backup-loss", "Backup server unavailable",
-             "backup-server", "Simulated backup server loss during restore window."),
-]
-
-
 def build_graph(assets: List[dict], depends_on: Dict[str, List[str]]) -> Dict[str, List[str]]:
     """depends_on: asset_id -> list of asset_ids it requires."""
     graph = {a["id"]: list(depends_on.get(a["id"], [])) for a in assets}

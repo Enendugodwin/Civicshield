@@ -1,979 +1,608 @@
-# MASTER DEVELOPMENT PROMPT — CIVICSHIELD SERVICE HEALTH & AFFECTED ASSETS INTELLIGENCE DASHBOARD
+# Implementation Prompt: AI-Powered Recovery Recommendations and Threat Intelligence Center
 
-## 1. Role and Objective
+## Project Context
 
-Act as a senior full-stack engineer, cybersecurity architect, UI/UX designer, geospatial visualization engineer and DevSecOps specialist.
+You are working on an existing cybersecurity application running locally at:
 
-Build a complete, functional, production-minded dashboard for **CivicShield**, an AI-assisted cybersecurity and resilience platform designed to protect essential community services, including water utilities, electricity infrastructure, local government, healthcare infrastructure and other critical services.
+- **Recovery:** `http://localhost:5173/recovery`
+- **Threat Intelligence:** `http://localhost:5173/threats`
 
-Use the user-provided Aegis Nexus screenshot as the primary visual reference. Recreate its dark executive dashboard, compact metrics, left navigation, workspace tabs, interactive geospatial map, affected-assets table and floating executive-perspective menu. Use original CivicShield branding and implementation.
+Your task is to enhance these existing pages with functional, AI-powered cybersecurity capabilities. Do not create a separate application or rebuild the entire project.
 
-This is an implementation task, not a request for a proposal or static mockup. Inspect the existing repository, build the application in the actual project workspace, run it, test the interactions and resolve implementation errors.
+First, inspect the existing codebase, architecture, components, API integrations, database schema, routing, authentication, and design system. Reuse the existing functionality and preserve the application's current visual identity.
 
-Do not replace an existing application unnecessarily. If CivicShield already has a backend, database, authentication system or shared components, reuse compatible functionality and integrate the dashboard into the existing architecture.
+The objective is to turn these pages into intelligent security operations interfaces that identify weaknesses, correlate global cyber threats with the organization's assets, and recommend actionable remediation steps.
 
-## 2. Product Vision
+---
 
-CivicShield helps organizations with limited cybersecurity resources understand their infrastructure, identify weaknesses, prioritize threats according to their impact on essential services, plan remediation and verify recovery readiness.
+# 1. Recovery Page — AI Remediation Recommendations
 
-This dashboard is the **Service Health and Affected Assets Intelligence Map** module.
+Route: `/recovery`
 
-It must help users answer:
+## Objective
 
-- Which essential services are down, degraded or at risk?
-- Which assets and dependencies are affected?
-- What is the potential operational impact?
-- Which security findings contribute to the risk?
-- What should the security team prioritize?
-- How prepared is the organization to restore its services?
+When a device fails a security simulation, the application must automatically generate contextual AI recommendations explaining why it failed, how to resolve the issue, and how to verify that the fix works.
 
-The application must combine real deterministic application logic with AI-assisted explanations where available. It must not be a static dashboard with fabricated metrics or a generic AI chatbot.
+### 1.1 Simulation Results
 
-## 3. Required Technology Stack
+Display the results of each device simulation, including:
 
-Use the following stack unless the existing project has a compatible, established alternative:
+- Device name and unique asset ID.
+- Hostname, IP address, operating system, and device type, where available.
+- Simulation name and execution timestamp.
+- Overall result: Passed, Failed, Warning, or Not Evaluated.
+- Security controls that passed or failed.
+- Risk severity: Critical, High, Medium, or Low.
+- Failed policies, misconfigurations, and missing controls.
+- Relevant evidence, logs, and detected configuration issues.
+- Business criticality and exposure level, if available.
 
-### Frontend
-- React.
-- TypeScript.
-- Vite.
-- Tailwind CSS.
-- Lucide React icons.
-- React Flow for infrastructure dependency visualization.
-- Leaflet and OpenStreetMap for geographic mapping.
-- Recharts for trend charts and service-level objectives.
+Include summary cards for:
 
-### Backend
-- Python 3.12 or another compatible supported version.
-- FastAPI.
-- Pydantic.
-- SQLAlchemy.
-- SQLite for the local MVP.
-- PostgreSQL compatibility for future deployment.
-- Pytest for backend testing.
+- Total devices simulated.
+- Devices that passed.
+- Devices that failed.
+- Devices requiring remediation.
+- Critical failures.
+- Remediation completion rate.
 
-### AI
-- Meta Muse Spark through the currently documented official Meta API, where access is available.
-- A provider abstraction layer.
-- Structured prompts and validated JSON output.
-- A deterministic fallback when AI is unavailable.
+Provide filtering by severity, device, simulation type, operating system, and remediation status.
 
-Verify the current official API documentation before implementing the integration. Do not invent endpoints, model identifiers or authentication methods. Never expose API credentials in frontend code.
+### 1.2 AI Recommendations for Failed Devices
 
-If the backend has not yet been implemented, create a typed mock-data adapter that allows the frontend to function immediately and be connected to the backend later.
+For every failed device, generate an AI remediation report grounded in the actual simulation results and available device telemetry.
 
-### Deployment
-- Docker Compose where appropriate.
-- Environment variables for secrets and configuration.
-- `.env.example`.
-- A documented local development workflow.
-- Windows PowerShell setup instructions and equivalent Linux/macOS commands.
-- Automated tests.
+Each report must contain:
 
-Keep the implementation lightweight, modular and maintainable.
+**A. Failure explanation**
+- What failed and why.
+- The relevant security policy or control.
+- Evidence supporting the finding.
+- Potential impact if the issue remains unresolved.
+- Relevant MITRE ATT&CK technique or security framework control, when applicable and verified.
 
-## 4. Design Language
+**B. Recommended remediation**
+- A concise summary of the recommended fix.
+- Step-by-step instructions tailored to the affected operating system, platform, or security product.
+- The expected secure configuration or desired state.
+- Relevant official vendor documentation.
+- Required permissions and dependencies.
+- Potential operational impact, downtime, or compatibility concerns.
+- A rollback procedure for changes that could disrupt production.
 
-Create a professional, information-dense cybersecurity interface inspired by the supplied screenshot.
+**C. Remediation actions**
 
-### Visual characteristics
-- Deep navy and charcoal backgrounds.
-- Slightly lighter slate panels.
-- Thin, subtle borders.
-- Compact typography.
-- Dense information layouts.
-- Restrained cyan and blue accents.
-- Green for operational or healthy states.
-- Amber for warnings and degradation.
-- Red for critical incidents and outages.
-- Violet for identity security and AI governance.
-- Small, precise status badges.
-- Compact metric cards with subtle sparklines.
-- Modest corner radii.
-- Clear visual hierarchy and readable contrast.
+Support appropriate actions such as:
 
-Avoid generic SaaS landing-page aesthetics, oversized cards, excessive whitespace, bright gradients, unnecessary animations and decorative elements that reduce the information density.
+- View full recommendation.
+- Copy remediation commands.
+- Export the remediation plan.
+- Create a remediation task.
+- Assign the task to a team or administrator.
+- Mark the recommendation as accepted, rejected, or deferred.
+- Mark remediation as completed.
+- Rerun the relevant simulation.
+- Compare the new results with the original failure.
 
-Prioritize visual fidelity at 1440 × 900 and 1920 × 1080 resolutions. The application must also remain usable on tablets and mobile devices.
+Only show actions that the backend actually supports. Do not claim a fix was applied merely because a recommendation was generated.
 
-Include a visible environment indicator:
+### 1.3 AI Recommendation Engine
 
-**DEMO ENVIRONMENT — SIMULATED DATA**
+Build an AI service that accepts structured simulation results and relevant asset metadata.
 
-All synthetic assets, incidents, service impacts and geographic markers must be clearly identified as illustrative.
+Example input:
 
-## 5. Main Application Layout
+{
+  "asset_id": "ASSET-1042",
+  "hostname": "WORKSTATION-1042",
+  "os": "Windows 11",
+  "simulation": "Endpoint Security Baseline",
+  "status": "failed",
+  "findings": [
+    {
+      "control": "Endpoint protection",
+      "severity": "high",
+      "evidence": "Required protection service is disabled"
+    }
+  ]
+}
 
-Create a desktop-first, three-part dashboard consisting of:
+The AI must produce a structured response containing:
 
-1. A collapsible left navigation sidebar.
-2. A compact top header containing global metrics and workspace controls.
-3. A main content workspace containing navigation tabs, KPI cards, a geospatial map and an affected-assets table.
+- Finding summary.
+- Root-cause hypothesis.
+- Evidence and confidence level.
+- Risk assessment.
+- Prioritized remediation steps.
+- Relevant commands or configuration changes.
+- Required permissions.
+- Potential side effects.
+- Rollback instructions.
+- Validation steps.
+- Official references.
+- Residual risk after remediation.
 
-The dashboard should fit as much of the important information as possible into a 1440 × 900 viewport without unnecessary scrolling. The map and table should support independent scrolling where appropriate.
+Use structured JSON output validated against a backend schema.
 
-### 5.1 Left Navigation Sidebar
+Do not allow the model to invent logs, asset properties, simulation results, CVEs, vendor advisories, or successful remediation outcomes.
 
-Use a fixed or sticky sidebar approximately 174 px wide at a 1440 px viewport.
+Clearly distinguish confirmed findings from inferred root causes.
 
-At the top, display the CivicShield logo, product name and collapse/expand control.
+### 1.4 Recovery Workflow
 
-Organize navigation into compact groups.
+Implement the following workflow:
 
-**Executive Focus**
-- Enterprise Posture
-- Affected Assets
-- Governance
-- Incident Impact
-- Service Health
+1. A device simulation completes.
+2. The backend stores the simulation result and evidence.
+3. Failed controls are identified.
+4. Findings are prioritized according to severity, asset criticality, and exposure.
+5. The AI recommendation service analyzes the findings.
+6. Recommendations are stored against the asset and simulation.
+7. The frontend displays the results.
+8. An administrator reviews and approves the proposed remediation.
+9. The remediation is performed through an authorized integration or by an administrator.
+10. The device is tested again.
+11. The application records whether the issue was resolved.
 
-**Operations**
-- Infrastructure Map
-- Asset Inventory
-- Security Assessments
-- Incident Response
-- Recovery Lab
+Track recommendation status using appropriate states such as Pending Review, Approved, In Progress, Resolved, Failed Verification, and Deferred.
 
-**Risk & Posture**
-- Vulnerabilities
-- Configuration Drift
-- Exposure Analysis
-- Risk Prioritization
+Avoid generating duplicate recommendations for the same unresolved finding unless new evidence or material changes justify an update.
 
-**Identity & Threat**
-- Identity Security
-- Threat Intelligence
-- Access Analysis
-- AI Agent Security
+---
 
-**Workbenches**
-- Infrastructure Graph
-- Assessment Workbench
-- Recovery Simulator
+# 2. Threats Page — Global Threat Intelligence and Internal Asset Exposure
 
-**Reports**
-- Executive Reports
-- Security Reports
-- Recovery Reports
+Route: `/threats`
 
-**Administration**
-- Users and Roles
-- Audit Log
-- Integrations
-- Settings
+## Objective
 
-Use compact icons, uppercase section labels, subtle chevrons and a narrow cyan indicator for the active item.
+Transform this page into an AI-powered threat intelligence and exposure management center.
 
-Navigation groups must expand and collapse. Clicking an item must open the appropriate page or view. Do not leave visible navigation links inert. Where a complete secondary page is outside the initial implementation scope, provide a meaningful functional view using the same underlying data rather than an empty placeholder.
+The page must answer three questions:
 
-### 5.2 Top Metrics Header
+1. What significant cyber threats and security advisories are emerging globally?
+2. Which assets in my environment are affected or potentially exposed?
+3. What should I do to mitigate or resolve each threat?
 
-Create a compact horizontal header across the workspace.
+## 2.1 Recent Global Threat Advisories
 
-Display global indicators for:
+Build a threat intelligence ingestion service that retrieves recent, verifiable cybersecurity advisories and threat reports from reputable sources.
 
-- Security posture score.
-- Critical incidents.
-- Service degradation count.
+Prioritize sources such as:
+
+- CISA Known Exploited Vulnerabilities (KEV) Catalog.
+- CISA Cybersecurity Advisories.
+- NIST National Vulnerability Database (NVD).
+- CERT/CC advisories.
+- Microsoft Security Response Center.
+- Cisco Security Advisories.
+- Palo Alto Networks security advisories.
+- Fortinet PSIRT advisories.
+- Cloudflare security advisories and relevant threat reports.
+- Relevant national CERTs and other trusted vendor security bulletins.
+
+Use official APIs, RSS feeds, or supported public data sources where available.
+
+Do not scrape websites in violation of their terms or depend on brittle HTML parsing when an official feed or API exists.
+
+### Threat intelligence fields
+
+Each threat record should include:
+
+- Threat or advisory title.
+- CVE ID, when applicable.
+- Advisory identifier.
+- Source organization.
+- Original publication date.
+- Last updated date.
+- Date first ingested by the application.
+- Threat category.
+- Severity and CVSS score, when available.
+- Exploitation status.
+- Affected products and versions.
+- Vulnerability description.
+- Known indicators of compromise, when applicable.
+- Threat actor attribution, only when supported by reliable sources.
+- Official source URL.
+- Data freshness and verification status.
+
+Support filtering and searching by:
+
+- Critical, High, Medium, and Low severity.
+- Exploited versus not known to be exploited.
+- Publication date.
+- Vendor and product.
+- CVE.
+- Threat category.
 - Affected assets.
-- Exposed assets.
-- Critical findings.
-- Recovery readiness.
-- Audit coverage.
+- Source organization.
 
-On the right, include:
-- Time-range selector.
-- Organization selector.
-- Environment selector.
-- Active workspace selector.
-- User profile menu.
+Sort important threats by a combination of verified exploitation status, severity, exposure, asset criticality, and relevance to the organization's environment.
 
-Each metric should have a compact label, clearly readable value and appropriate status treatment.
+Do not rank threats by CVSS alone.
 
-All metric values must be calculated from the active dataset or returned by the backend. Do not hard-code dashboard figures independently of the records they represent.
+## 2.2 Internal Asset Correlation
 
-### 5.3 Workspace Header
+This is a core requirement.
 
-Show a compact breadcrumb:
+The application must correlate incoming threat intelligence against the organization's actual asset inventory.
 
-`CivicShield / Service Health / Affected Assets Intelligence Map`
+Retrieve available inventory data from the existing backend and connected sources, such as endpoint agents, vulnerability scanners, cloud inventory, CMDB, operating-system inventory, and authorized security integrations.
 
-Display the workspace title:
+For each asset, use available attributes such as:
 
-**Service Health — Affected Assets Intelligence Map**
+- Asset ID and hostname.
+- Operating system and version.
+- Installed software and versions.
+- Exposed services and ports.
+- Installed packages and libraries.
+- Cloud platform and resource type.
+- Firmware and network appliance versions.
+- Vulnerability scan findings.
+- Patch status.
+- External exposure.
+- Business criticality.
+- Existing compensating controls.
 
-Include a Back button, workspace actions and an executive-lens selector.
+Compare these attributes with advisory affected-product ranges, vulnerability conditions, and known prerequisites.
 
-Provide the following tabs:
+### Asset matching logic
 
-- What's Down
-- Critical Service Status
-- Affected Assets
-- Affected Assets Intelligence Map
-- Customer Impact Map
-- SLO / SLA Burn Chart
-- Availability Timeline
+Classify matches as:
 
-Set Affected Assets Intelligence Map as the default active tab.
+- **Confirmed affected:** Available evidence establishes that the asset runs an affected product/version and meets the relevant vulnerability conditions.
+- **Potentially affected:** The product or version is incomplete, ambiguous, or requires additional verification.
+- **Not affected:** Reliable inventory evidence establishes that the asset is outside the affected conditions.
+- **Unknown:** There is insufficient inventory or advisory information to determine exposure.
 
-Use a compact highlighted background and cyan accent for the active tab. Each tab must display a distinct, functional view or meaningful filtered representation of the same underlying data.
+Do not label an asset vulnerable merely because its vendor appears in an advisory.
 
-## 6. KPI Cards
+Account for version ranges, edition differences, patched releases, configuration prerequisites, and mitigating controls where the source provides that information.
 
-Immediately below the tabs, display four compact cards in a single desktop row.
+If asset inventory is stale, missing, or incomplete, display the data-quality limitation.
 
-### Card A — Services Down
-- Current number of unavailable services.
-- Red status indicator.
-- Small trend sparkline.
-- Comparison with the previous period.
+### Threat-to-asset mapping
 
-### Card B — Affected Assets
-- Number of assets associated with active incidents or service impact.
-- Amber/orange emphasis.
-- Trend indicator.
-- Click action that filters the map and table.
+For every relevant advisory, display:
 
-### Card C — SLAs at Risk
-- Number of service-level objectives at risk.
-- Green, amber or red status based on the actual calculated state.
-- Small effectiveness or trend indicator.
+- Number of confirmed affected assets.
+- Number of potentially affected assets.
+- Number of assets requiring verification.
+- Affected asset names and identifiers.
+- Relevant product and version.
+- Exposure evidence.
+- Asset criticality.
+- External accessibility, where known.
+- Patch or remediation status.
+- Last inventory update.
+- Recommended next action.
 
-### Card D — Average Recovery Time
-- Recovery duration in hours.
-- Historical trend.
-- Clear indication of whether the figure is measured, estimated or simulated.
+Allow users to open an affected asset to see the detailed match evidence.
 
-Cards should be approximately 80–100 px tall, with compact labels and sparklines.
+Include a relationship view or expandable panel showing:
 
-All counts, status colors and trends must reflect the dataset, selected time range and relevant filters. Do not imply historical measurements exist if the application only has synthetic sample data.
+Global Advisory → Vulnerability or Threat → Affected Product → Internal Asset → Recommended Remediation.
 
-## 7. Main Feature — Affected Assets Intelligence Map
+## 2.3 AI Threat Analysis
 
-The map is the primary visual centerpiece.
+Generate an AI analysis for each significant advisory using the original source data and verified internal asset matches.
 
-Use a two-column content area:
+Each analysis should contain:
 
-- Left: approximately 60–65% of the available width for the interactive map.
-- Right: approximately 35–40% for the affected-assets table.
+**Threat summary**
+- What the vulnerability or threat is.
+- How it may be exploited.
+- Which products, versions, and configurations are affected.
+- Whether exploitation is confirmed, reported, or unknown.
+- Whether the advisory appears relevant to the current environment.
 
-### 7.1 Geospatial Map
+**Organizational impact**
+- Which internal assets are affected.
+- Which assets are potentially affected and require investigation.
+- Likely business impact based on available asset metadata.
+- Potential attack paths, but only where the necessary evidence exists.
+- Whether the threat is relevant to externally exposed or business-critical assets.
 
-Implement a real interactive Leaflet map using OpenStreetMap tiles.
+**Recommended actions**
+- Immediate containment measures, if justified.
+- Patching or upgrading instructions.
+- Temporary mitigations when patching is unavailable.
+- Detection opportunities and relevant telemetry sources.
+- Threat hunting queries or detection logic, where appropriate.
+- Verification steps.
+- Recovery and rollback guidance.
+- Official vendor documentation.
 
-Provide a restrained, dark-compatible map style where practical. Keep the map visually similar to the supplied reference: a large map canvas, compact controls, colored markers, floating statistics and a selected-location information card.
+**Priority**
+Assign an actionable priority such as:
 
-Display geolocated assets and essential services using synthetic coordinates.
+- P0 — Immediate response required.
+- P1 — Urgent remediation.
+- P2 — Planned remediation.
+- P3 — Monitor or investigate.
 
-Use consistent marker colors:
+Explain why the priority was assigned.
 
-- Red: Down.
-- Amber: Degraded.
-- Yellow: At Risk.
-- Blue: Recovering.
-- Green: Operational.
+Priority must reflect more than the CVSS score. Consider known exploitation, asset exposure, business criticality, exploit prerequisites, compensating controls, and confidence in the asset match.
 
-Support marker clustering or grouping when necessary.
+AI analysis must cite the advisory or vendor documentation used. Clearly label AI-generated assessments and uncertain conclusions.
 
-Include:
-- Zoom controls.
-- Full Map button.
-- Map legend.
-- Current map status summary.
-- Asset/service markers.
-- Marker selection.
-- Search and filtering controls.
-- Reset Filters button.
-- Selected-marker details panel.
+## 2.4 Threat Dashboard
 
-### 7.2 Map Summary Overlay
+Create a dashboard containing:
 
-Display compact statistics over the map:
+- New advisories ingested within the last 24 hours.
+- Critical and high-severity threats.
+- Known exploited vulnerabilities relevant to the environment.
+- Confirmed affected assets.
+- Potentially affected assets.
+- Critical assets with unresolved exposure.
+- Threats with remediation overdue.
+- Threat intelligence feed health and last successful synchronization.
 
-- Total mapped assets.
-- Assets down.
-- Critical assets.
-- Affected beneficiaries or users, where data exists.
+Use real data from the backend. If there is no data, show a useful empty state and explain how to connect a source or import inventory.
 
-The figures must update based on the active dataset and filters.
+Never display fabricated threats or invented asset counts as real results.
 
-### 7.3 Map Filters
+## 2.5 Threat Detail Page or Drawer
 
-Implement the following controls:
+When a user selects a threat, show a detailed view with:
 
-- Service status.
-- Severity.
-- Asset owner.
-- Exposure.
-- Service type.
-- Region.
+- Original advisory and source link.
+- Publication and update dates.
+- CVE details and severity.
+- Exploitation status and evidence.
+- Affected product/version ranges.
+- AI-generated explanation.
+- Internal asset matches and match confidence.
+- Recommended remediation steps.
+- Relevant detection and hunting guidance.
+- Assigned owner and remediation status.
+- Activity history and verification results.
 
-When a filter changes, update the markers, summary statistics and table consistently.
+Provide a clear separation between source-verified facts, internal inventory evidence, and AI-generated analysis.
 
-### 7.4 Selected Marker Panel
+## 2.6 Remediation Workflow
 
-When a marker is selected, display a compact information panel with:
+For a confirmed or potential match:
 
-- Asset or service name.
-- Geographic region.
-- Current status.
-- Severity.
-- Affected users or service impact, if known.
-- Associated incident ID.
-- Relevant security findings.
-- A View Details action.
+1. Open the threat.
+2. Review the affected assets and supporting evidence.
+3. Generate or inspect AI recommendations.
+4. Assign an owner and due date.
+5. Approve the proposed response.
+6. Apply the fix using an authorized integration or documented manual procedure.
+7. Rerun a vulnerability scan or another suitable verification check.
+8. Update the asset's exposure status.
+9. Record the outcome and audit history.
 
-Clearly distinguish confirmed outages from potential or simulated impacts.
+Where supported, integrate with existing ticketing, patch management, endpoint protection, SIEM, or vulnerability management systems.
 
-### 7.5 Full Map Mode
+Do not imply that an integration exists unless it has been implemented and configured.
 
-The Full Map action must expand the map across most of the content area. The table should become accessible through a collapsible side panel.
+---
 
-Provide a clear way to exit Full Map mode and return to the original split layout.
+# 3. Backend Architecture and Data Model
 
-### 7.6 Map Failure Handling
+Inspect and reuse the current backend before adding new services.
 
-If external map tiles cannot load, display a clear fallback state and preserve the remaining functionality.
-
-Where feasible, provide a locally rendered schematic map or infrastructure dependency graph. Do not leave a blank or broken map container.
-
-Do not fabricate real geographic observations or imply that illustrative locations represent actual infrastructure.
-
-## 8. Affected Assets Table
-
-Place a compact, scrollable table beside the map.
-
-Use the following columns:
-
-- Asset.
-- Region.
-- Status.
-- Severity.
-- Service.
-- Incident ID.
-
-Seed the demo with representative synthetic records such as:
-
-| Asset | Region | Status | Severity |
-|---|---|---|---|
-| water-gateway-01 | osun-east | Degraded | High |
-| ops-server-03 | south-west | Recovering | Critical |
-| billing-db-01 | central | Degraded | Medium |
-| backup-node-02 | south-west | At Risk | High |
-| monitoring-01 | osun-east | Operational | Low |
-
-Use compact colored badges and readable, restrained typography.
-
-Implement:
-- Search.
-- Sorting.
-- Status filtering.
-- Severity filtering.
-- Region filtering.
-- Row selection.
-- Pagination or virtual scrolling when needed.
-- Asset detail drawer.
-- Incident detail action.
-
-Clicking a table row must select and highlight the corresponding map marker. Clicking a map marker must highlight the matching table row.
-
-Clicking an incident ID must open the associated incident detail view. Clicking an asset name must open its details.
-
-The map and table must use a shared data model and centralized filtering logic. Do not maintain inconsistent duplicate datasets for the two components.
-
-## 9. Executive Lens Selector
-
-Implement a floating dropdown titled **CivicShield Lens**, positioned near the upper-right workspace controls.
-
-Include these perspectives:
-
-- SOC Analyst (L1/L2).
-- SOC Manager.
-- Incident Commander.
-- Exposure & Vulnerability.
-- Identity Security.
-- AI Governance.
-- Executive.
-- Service Resilience.
-
-Display a compact floating menu with a distinct active-selection indicator, inspired by the reference image.
-
-Selecting a lens must change the displayed priorities, contextual metrics or panel emphasis without silently modifying the underlying records.
-
-### Lens behavior
-
-**SOC Analyst:** Technical findings, event evidence, affected hosts and assessment results.
-
-**SOC Manager:** Incident workload, remediation progress, assessment coverage and operational risk.
-
-**Incident Commander:** Incident status, service impact, response timeline and restoration progress.
-
-**Exposure & Vulnerability:** Exposed assets, weaknesses, critical findings and remediation priorities.
-
-**Identity Security:** Privileged identities, MFA evidence, excessive access and identity-related findings.
-
-**AI Governance:** AI integrations, model status, AI-related risks and governance findings.
-
-**Executive:** Essential-service health, overall risk, critical incidents and recovery readiness.
-
-**Service Resilience:** Dependencies, backup readiness, restoration objectives and recovery scenarios.
-
-Provide a clear active-lens label so the user always knows which perspective is selected.
-
-## 10. Functional Dashboard Views
-
-Implement all workspace tabs as meaningful, interactive views sharing the same data source.
-
-### 10.1 What's Down
-Display unavailable services, associated assets, incidents and operational consequences. Allow users to filter by severity and region.
-
-### 10.2 Critical Service Status
-Display essential services with health status, availability, configured objectives and critical dependencies.
-
-### 10.3 Affected Assets
-Display the full filtered asset inventory with findings, owners, incidents and operational status.
-
-### 10.4 Affected Assets Intelligence Map
-Display the map and synchronized affected-assets table as the default view.
-
-### 10.5 Customer Impact Map
-Display illustrative impact regions and estimated affected beneficiaries, where the sample data supports these calculations. Label all synthetic estimates clearly.
-
-### 10.6 SLO / SLA Burn Chart
-Display service availability against configured service-level objectives, using synthetic time-series data where necessary. Explain the time window and calculation used for burn-rate indicators.
-
-### 10.7 Availability Timeline
-Display chronological service status transitions, incident events, assessment events and recovery actions. Distinguish recorded events from simulated events.
-
-## 11. Asset and Incident Details
-
-### Asset Details Drawer
-
-Selecting an asset should open a right-side drawer without unnecessarily leaving the current workspace.
-
-Display:
-- Asset name and type.
-- Current operational health.
-- Criticality.
-- Region or network zone.
-- Owner.
-- Associated essential service.
-- Security assessment results.
-- Related findings.
-- Dependency relationships.
-- Recent incident events.
-- Backup and recovery readiness.
-- Last assessment timestamp.
-
-Provide working actions to:
-- View findings.
-- View dependency graph.
-- View associated incidents.
-- Open a remediation plan.
-- View recovery status.
-
-### Incident Details Drawer
-
-Display:
-- Incident identifier.
-- Incident status and severity.
-- Affected assets.
-- Affected essential services.
-- Incident timeline.
-- Supporting evidence.
-- Related findings.
-- Response progress.
-- Recovery status.
-- Recorded operator actions.
-
-Never invent timestamps, evidence or confirmed incident facts. Clearly label synthetic demo records.
-
-Sensitive or disruptive actions must require authorization and explicit confirmation.
-
-## 12. CivicShield Backend Integration
-
-The dashboard must be an application layer over CivicShield's underlying data and security engines, not an isolated mockup.
-
-Define shared TypeScript interfaces for:
-
-- `Asset`
-- `Service`
-- `AssetRelationship`
-- `SecurityFinding`
-- `Incident`
-- `RecoveryStatus`
-- `AssessmentResult`
-- `ServiceLevelObjective`
-- `AuditEvent`
-
-Use a centralized API client with typed requests, consistent error handling and loading states.
-
-Support backend endpoints equivalent to:
-
-- `GET /api/health`
-- `GET /api/assets`
-- `GET /api/services`
-- `GET /api/relationships`
-- `GET /api/findings`
-- `GET /api/incidents`
-- `GET /api/assessments`
-- `GET /api/recovery/status`
-- `GET /api/audit`
-
-Adapt endpoint names to the existing backend if appropriate.
-
-If no backend exists, implement a mock-data service using deterministic seeded data and a clear API adapter boundary. All major interactions must still work in demo mode.
-
-When the backend is available, retrieve actual records rather than continuing to use independent hard-coded frontend values.
-
-Provide an obvious data-source indicator for Demo, Connected or Offline mode.
-
-## 13. Integration with CivicShield Security Engines
-
-Use the dashboard to expose existing CivicShield capabilities where implemented.
-
-### Security assessment engine
-Show the results of deterministic checks, including the status, severity, affected asset and evidence.
-
-### Risk prioritization engine
-Display the backend-calculated risk score and its contributing factors. Do not generate arbitrary risk scores in the frontend.
-
-### AI-assisted remediation
-Allow the user to open a finding and view an AI-assisted explanation or remediation plan, if supported by the backend.
-
-### RecoveryLab
-Display recovery readiness and scenario status. Provide a working navigation action to the recovery simulator.
-
-### Incident response
-Show linked incident records and timelines.
-
-### Infrastructure graph
-Use asset relationships to visualize service dependencies where needed.
-
-If a module has not yet been implemented, indicate that the functionality is not yet connected rather than presenting fabricated results as live capabilities.
-
-## 14. Data Model and Seed Dataset
-
-Create consistent synthetic records for:
+Create or extend suitable models for:
 
 - Assets.
-- Essential services.
-- Asset relationships.
-- Security findings.
-- Incidents.
-- Service-level objectives.
-- Recovery status.
-- Assessment results.
+- Asset software and versions.
+- Simulation runs.
+- Simulation findings.
+- AI recommendations.
+- Threat advisories.
+- Affected-product ranges.
+- Threat-to-asset matches.
+- Remediation tasks.
+- Remediation verification results.
+- Threat feed synchronization status.
 - Audit events.
 
-Each record should have stable identifiers, timestamps, status and relevant ownership or relationship fields.
+Recommended conceptual relationships:
 
-Seed approximately 8–12 assets for the initial water-utility demo, including:
+Asset → Simulation Run → Finding → AI Recommendation → Remediation Task → Verification Result.
 
-- Administrative workstation.
-- Operations workstation.
-- Identity server.
-- Application server.
-- Billing application.
-- Database server.
-- Network gateway.
-- Backup server.
-- Monitoring server.
-- Water operations monitoring workstation.
+Threat Advisory → Affected Product → Asset Match → AI Recommendation → Remediation Task.
 
-Include both healthy and affected records.
+Maintain a traceable connection between every AI recommendation and the source finding or threat advisory that produced it.
 
-Demonstrate at least three meaningful service-impact scenarios:
-1. An unavailable application server.
-2. A privileged account security issue.
-3. A backup or monitoring dependency at risk.
-
-Ensure that all dashboard metrics, map markers, status counts, table records and charts derive from a consistent dataset.
-
-Use deterministic seed data so the demonstration is reproducible.
-
-## 15. Security and Privacy Requirements
-
-CivicShield is a defensive cybersecurity application and must itself follow secure development practices.
-
-Implement or preserve:
-- Server-side authorization.
-- Input validation.
-- Secure session or token handling appropriate to the existing authentication architecture.
-- Parameterized database access.
-- Safe rendering of imported content.
-- Restricted CORS configuration.
-- Rate limiting for relevant sensitive endpoints.
-- Audit logging for security-relevant changes.
-- Safe error handling.
-- Secure handling of API credentials.
-- Upload size and row-count limits.
-- Validation of imported CSV and JSON.
-- Organization-level data isolation where multi-tenancy is implemented.
-
-Treat imported logs, asset descriptions and AI-generated content as untrusted data.
-
-Never automatically execute AI-generated commands or allow model output to directly modify production infrastructure.
-
-Do not implement unauthorized scanning, exploitation or destructive testing. Use synthetic data by default.
-
-## 16. AI Integration
-
-Implement a backend AI adapter for Muse Spark using verified official Meta API documentation.
-
-Use AI for suitable tasks such as:
-- Explaining security findings in plain language.
-- Summarizing evidence-backed incident records.
-- Generating remediation guidance.
-- Explaining potential service impacts using supplied dependency data.
-
-The model must not determine factual status counts or fabricate live operational telemetry.
-
-Use structured prompts and validated responses. Include relevant finding IDs and evidence references where possible.
-
-Treat imported content as untrusted input and defend against prompt injection.
-
-Do not send unnecessary infrastructure records or sensitive data to the AI provider.
-
-When the API is unavailable:
-- Preserve all deterministic dashboard functionality.
-- Show the AI provider as unavailable.
-- Provide an explicit fallback when appropriate.
-- Never represent a fallback response as a live Meta model response.
-
-If model access is not available during initial development, use a deterministic mock provider with a clear interface and document how to configure the actual integration.
-
-## 17. Responsive Design
-
-### Desktop
-- Fixed or collapsible sidebar.
-- Compact top metrics.
-- Four KPI cards in a row.
-- Map and table side by side.
-- Floating lens selector.
-- Detail drawers.
-
-### Tablet
-- Collapsible navigation.
-- Responsive KPI grid.
-- Resizable or stacked map/table layout.
-
-### Mobile
-- Navigation drawer.
-- Stacked KPI cards.
-- Map above the asset list.
-- Compact filter controls.
-- Scrollable or card-based asset records.
-- Full-width detail panels.
-- Touch-friendly controls.
-
-Do not simply scale down the desktop interface. Reorganize components according to the available screen width.
-
-## 18. Component Architecture
-
-Use reusable components with typed props.
-
-Suggested structure:
-
-- `AppShell`
-- `Sidebar`
-- `NavigationGroup`
-- `TopMetricsBar`
-- `WorkspaceHeader`
-- `WorkspaceTabs`
-- `ExecutiveLensMenu`
-- `MetricCard`
-- `AffectedAssetsMap`
-- `MapMarker`
-- `MapLegend`
-- `MapFilters`
-- `AffectedAssetsTable`
-- `AssetDetailsDrawer`
-- `IncidentDetailsDrawer`
-- `ServiceHealthView`
-- `AffectedAssetsView`
-- `CustomerImpactView`
-- `SlaBurnChart`
-- `AvailabilityTimeline`
-- `StatusBadge`
-- `DemoDataBanner`
-- `DataSourceIndicator`
-- `LoadingState`
-- `ErrorState`
-- `EmptyState`
-
-Separate data access, business logic and presentation components.
-
-Centralize:
-- Status-to-color mappings.
-- Filtering and sorting.
-- Risk and impact display rules.
-- Data-source status.
-- Shared selected-asset state.
-- Navigation state.
-- Lens selection.
-
-Avoid duplicated logic, oversized components and unnecessary global state.
-
-## 19. Interaction and Functional Acceptance Criteria
-
-All major visible controls must perform their advertised actions.
-
-Implement and test:
-- Sidebar collapse and expansion.
-- Navigation between functional views.
-- Navigation group expansion.
-- Workspace tab switching.
-- Executive lens switching.
-- Time-range selection.
-- Organization and environment selection.
-- Asset search.
-- Table sorting.
-- Map filters.
-- Marker selection.
-- Map/table synchronization.
-- Full Map mode.
-- Filter reset.
-- Asset details drawer.
-- Incident details drawer.
-- RecoveryLab navigation.
-- Security finding navigation.
-- Export of filtered asset records to CSV.
-- Refresh and data-source status.
-- Responsive mobile navigation.
-
-Filters must update every dependent component consistently.
-
-Handle:
-- Loading.
-- Empty results.
-- Backend errors.
-- Offline operation.
-- Missing map tiles.
-- Unavailable AI provider.
-- Invalid imported data.
-
-No visible primary action should be a decorative, nonfunctional control.
-
-## 20. Automated Testing
-
-Write and run appropriate frontend and backend tests.
-
-### Frontend
-Test:
-- Dashboard rendering.
-- KPI calculations.
-- Tab navigation.
-- Lens selection.
-- Filtering and sorting.
-- Marker selection.
-- Table/map synchronization.
-- Asset and incident drawers.
-- Full Map mode.
-- CSV export.
-- Loading and error states.
-- Mobile layout behavior.
-
-### Backend or data layer
-Test:
-- Asset and service retrieval.
-- Relationship consistency.
-- Finding association.
-- Incident association.
-- Metric calculations.
-- Invalid or missing data.
-- Access controls where implemented.
-- API error handling.
-- Deterministic demo-data initialization.
-
-### End-to-end workflow
-
-A user must be able to:
-1. Launch CivicShield.
-2. Open the Service Health dashboard.
-3. Inspect the seeded infrastructure map.
-4. Filter assets by severity or status.
-5. Select a map marker.
-6. Open the corresponding asset.
-7. Inspect related findings and incidents.
-8. Change the executive lens.
-9. Open a recovery or remediation view.
-10. Export the filtered asset records.
-
-Run the tests and resolve errors before claiming the application is complete. Report any remaining limitations honestly.
-
-## 21. Repository and Documentation
-
-Preserve the existing repository structure where practical.
-
-If starting from scratch, use a structure similar to:
-
-`civicshield/`
-- `frontend/`
-- `backend/`
-- `backend/app/`
-- `backend/tests/`
-- `sample-data/`
-- `docs/`
-- `scripts/`
-- `.env.example`
-- `.gitignore`
-- `docker-compose.yml`
-- `README.md`
-- `LICENSE`
-
-Provide:
-- Installation and startup instructions.
-- Required software and versions.
-- Environment configuration.
-- Demo-data explanation.
-- API integration documentation.
-- Architecture overview.
-- Testing instructions.
-- Troubleshooting.
-- Known limitations.
-- Instructions for connecting the real CivicShield backend.
-
-Do not commit secrets, API keys, credentials or sensitive infrastructure data.
-
-## 22. Meta Global AI Developer Hackathon Requirements
-
-The target hackathon runs from October 26 to November 4, 2026.
-
-Ensure that:
-- All project-specific work presented as new hackathon work is created during the event.
-- Existing projects or functionality are not misrepresented as new contributions.
-- Third-party libraries and assets are used according to their licenses.
-- The submitted repository is public.
-- The project is entered into exactly one track.
-- A three-minute demo video is prepared.
-- The Meta model's contribution is clearly demonstrated when model access is available.
-- Simulated results are labelled as simulated.
-- No unsupported security, customer or performance claims are made.
-
-Choose the Indie Developer track for a solo-builder submission unless the entrant explicitly selects the Startup track.
-
-Use the reference screenshot as inspiration rather than claiming the original design or code as your own.
-
-## 23. Three-Minute Demo Script
-
-Prepare `docs/DEMO_SCRIPT.md` with the following demonstration sequence.
-
-**0:00–0:25 — The problem**
-
-Introduce CivicShield and explain why smaller essential-service providers need accessible cybersecurity and resilience tools.
-
-**0:25–0:55 — Infrastructure visibility**
-
-Show the service health dashboard, map, affected assets and relationships.
-
-**0:55–1:25 — Investigate impact**
-
-Select a critical asset, inspect its findings and demonstrate how the application identifies potentially affected services.
-
-**1:25–1:55 — AI assistance**
-
-Generate an evidence-grounded remediation explanation using Muse Spark, or explicitly demonstrate the documented fallback if the model API is unavailable.
-
-**1:55–2:25 — Investigate and remediate**
-
-Open the finding, review the proposed action and demonstrate the supported simulated remediation workflow.
-
-**2:25–2:45 — Recovery readiness**
-
-Open RecoveryLab and run a synthetic service-failure scenario.
-
-**2:45–3:00 — The mission**
-
-Explain how CivicShield helps protect the essential services communities depend on.
-
-The demonstration must show actual working functionality. Do not present prerecorded model responses or simulated outcomes as live, verified results.
-
-## 24. Implementation Workflow
-
-Work through the following phases without stopping after planning.
-
-### Phase 1 — Inspect and initialize
-- Inspect the existing workspace.
-- Identify the framework and existing features.
-- Preserve compatible code.
-- Establish the dashboard route and application shell.
-- Configure the seed dataset.
-- Confirm the development environment runs.
-
-### Phase 2 — Build the interface
-- Implement the sidebar.
-- Implement the header and metrics.
-- Build workspace tabs.
-- Implement KPI cards.
-- Build the interactive map.
-- Implement the affected-assets table.
-- Connect marker selection and table selection.
-
-### Phase 3 — Implement functional views
-- Build service status.
-- Build affected assets.
-- Build customer impact.
-- Build SLO/SLA charts.
-- Build availability timeline.
-- Implement executive lens behavior.
-- Add asset and incident detail drawers.
-
-### Phase 4 — Integrate CivicShield
-- Connect existing APIs and security engines where available.
-- Implement typed API clients.
-- Add loading, error and offline handling.
-- Connect remediation and recovery workflows.
-- Keep a deterministic mock-data mode.
-
-### Phase 5 — Harden and test
-- Validate the data model.
-- Review security controls.
-- Execute automated tests.
-- Fix runtime and type errors.
-- Verify desktop and mobile layouts.
-- Test map failures and backend outages.
-
-### Phase 6 — Deliver
-- Write documentation.
-- Prepare the demo script.
-- Verify clean installation and startup.
-- Check for exposed secrets.
-- Document completed work and remaining limitations.
-
-Maintain a concise implementation checklist and update it as each feature is completed.
-
-## 25. Definition of Done
-
-The dashboard is complete when:
-
-- It launches using documented commands.
-- The UI matches the visual direction of the supplied reference.
-- CivicShield branding is applied consistently.
-- Metrics derive from the active data.
-- The map displays the seeded infrastructure records.
-- Map and table filters remain synchronized.
-- Selecting assets opens meaningful details.
-- The executive lens changes the displayed perspective.
-- All major tabs work.
-- CSV export functions correctly.
-- Backend integration or the documented mock-data adapter works.
-- AI availability is clearly represented.
-- No synthetic data is presented as real telemetry.
-- Error and offline states are usable.
-- Automated tests have been executed.
-- The application is responsive.
-- Documentation and the demo script are included.
-- No secrets are committed.
-
-## Final Instruction
-
-Begin by inspecting the existing project files and understanding the available implementation. Then build the CivicShield Service Health dashboard directly in the workspace.
-
-Prioritize **visual fidelity, a large interactive geospatial map, compact executive metrics, a synchronized affected-assets table, functional navigation, evidence-backed security information and working interactions**.
-
-Build the complete page, connect it to the existing CivicShield architecture where possible, run it locally, test the major workflows and fix implementation errors.
-
-Do not stop at a design proposal, screenshot, static mockup or code snippet. Deliver the working application and provide the exact commands required to run it.
-
-If a feature cannot be fully implemented, document the limitation and provide the most functional safe alternative. Never claim that unimplemented functionality is complete.
+Implement database migrations, indexes, pagination, validation, and access controls appropriate to the existing stack.
+
+Use background jobs or scheduled tasks for feed ingestion and expensive AI analysis. Avoid making the frontend wait for every advisory to be downloaded and analyzed.
+
+Use incremental synchronization, deduplication, retry handling, rate limits, and source-specific error handling.
+
+Do not run external threat feed requests directly from the browser when server-side processing is required.
+
+---
+
+# 4. AI Integration Requirements
+
+Inspect the project's current AI provider and configuration.
+
+Reuse an existing provider when available. Otherwise, implement a provider abstraction so the application can support a configured model without tightly coupling its business logic to one vendor.
+
+Requirements:
+
+- Configurable AI model and provider.
+- Structured, schema-validated responses.
+- Explicit timeouts and retry limits.
+- Safe handling of provider failures.
+- Input size limits.
+- Appropriate caching of repeated analyses.
+- Logging of analysis status and model/provider metadata.
+- No exposure of API keys in frontend code.
+- No secrets or unnecessary sensitive asset data sent to an external AI provider.
+- A deterministic fallback when AI is unavailable.
+
+The fallback should still provide rule-based severity, known advisory information, asset matching, and vendor remediation links. It must not pretend to be an AI-generated analysis.
+
+Treat advisory descriptions, web content, logs, and other imported data as untrusted input. Do not let embedded instructions in those sources control the AI system or authorize actions.
+
+AI must recommend security actions, not independently execute high-impact changes.
+
+Require explicit authorization for patch deployment, service changes, device isolation, firewall changes, account disabling, or other potentially disruptive actions. Log approvals and execution outcomes.
+
+---
+
+# 5. User Interface and Experience
+
+Preserve the existing design system, navigation, typography, colors, responsive behavior, and reusable components.
+
+The pages should feel like parts of the same cybersecurity application.
+
+### Recovery page layout
+
+- Summary metrics at the top.
+- Search, filters, and sorting.
+- Device simulation results table or card list.
+- Severity indicators.
+- Expandable failed-device details.
+- AI recommendation panel.
+- Remediation task status and verification history.
+
+### Threats page layout
+
+- Threat exposure summary at the top.
+- Recently published advisories.
+- Critical threat and known-exploited vulnerability sections.
+- Search, filters, and sorting.
+- Threat cards or a data table with severity and exploitation indicators.
+- Internal affected-asset counts.
+- AI analysis panel.
+- Threat detail drawer or dedicated detail route.
+- Remediation tracking.
+
+Use clear loading, empty, partial-data, stale-data, and error states. Avoid blank screens when one data source is unavailable.
+
+Use accessible controls, keyboard navigation, readable contrast, responsive layouts, and pagination for large datasets.
+
+Avoid unnecessary animations or visual clutter.
+
+---
+
+# 6. Security and Reliability
+
+Implement:
+
+- Authentication and role-based authorization consistent with the existing application.
+- Server-side authorization for asset and remediation operations.
+- Audit logging for approvals and changes.
+- Input validation and output sanitization.
+- Secure secret management.
+- Rate limiting for expensive analysis endpoints.
+- Protection against prompt injection in imported threat content.
+- Safe rendering of untrusted advisory text.
+- Read-only behavior by default for asset discovery.
+- Explicit authorization for active scans or endpoint actions.
+- Graceful handling of unavailable integrations.
+
+Do not create fake live data to make the interface look functional.
+
+If a source or integration is not configured, identify the missing dependency and show setup instructions.
+
+---
+
+# 7. API and Frontend Integration
+
+Implement API endpoints that match the project's conventions.
+
+Suggested capabilities include:
+
+- Retrieve simulation runs and failed findings.
+- Retrieve recommendations for a simulation or asset.
+- Generate or refresh a recommendation.
+- Create and update remediation tasks.
+- Retrieve recent threat advisories.
+- Retrieve threat details.
+- Retrieve affected assets for an advisory.
+- Retrieve advisories affecting an asset.
+- Trigger a controlled feed synchronization.
+- Request threat analysis.
+- Update remediation status.
+- Record verification results.
+- Retrieve synchronization health and audit history.
+
+These are conceptual endpoints, not mandatory literal paths. Follow the existing routing and naming conventions.
+
+Connect both pages to real backend data, implement loading and error handling, and ensure that state changes persist after refreshing the browser.
+
+Do not leave buttons as decorative elements.
+
+---
+
+# 8. Testing and Acceptance Criteria
+
+Add unit tests, integration tests, and frontend tests appropriate to the existing project.
+
+### Recovery acceptance criteria
+
+- A failed simulation produces a recommendation linked to its actual finding.
+- The recommendation contains actionable, OS-appropriate steps.
+- Evidence and inferred root causes are distinguishable.
+- A reviewer can approve, assign, and track remediation where implemented.
+- Verification updates the finding's status only when supported by new evidence.
+- An AI outage does not break the recovery page.
+- Successful simulations do not receive unnecessary failure remediation.
+
+### Threats acceptance criteria
+
+- The system ingests real advisories from at least one functioning, verifiable source.
+- Publication dates and source links are preserved.
+- Duplicate advisories are handled correctly.
+- Asset matching accounts for product and version evidence.
+- Confirmed, potential, unaffected, and unknown statuses are distinguishable.
+- Each relevant threat displays matching internal assets.
+- AI recommendations reference verified advisory information.
+- Missing inventory or feed data is communicated honestly.
+- Feed synchronization failures are visible and recoverable.
+- Remediation status and verification history persist.
+
+### End-to-end acceptance criteria
+
+- Both pages work with the current application's authentication and routing.
+- The frontend and backend use consistent data models.
+- No mock results are presented as live production intelligence.
+- Sensitive data and credentials are not exposed.
+- Existing features and pages continue working.
+- Database migrations and setup instructions are documented.
+- Tests pass, and all new dependencies are documented.
+
+---
+
+# 9. Implementation Instructions
+
+Work in this order:
+
+1. Inspect the full repository and identify the frontend, backend, database, AI provider, authentication, and existing simulation engine.
+2. Summarize the current architecture and identify reusable components.
+3. Trace the existing data flow for simulation results and assets.
+4. Implement the Recovery page enhancements.
+5. Implement the threat intelligence ingestion and normalization service.
+6. Implement internal asset correlation.
+7. Implement the AI analysis and recommendation service.
+8. Implement the Threats page enhancements.
+9. Connect remediation tracking and verification workflows.
+10. Add tests, database migrations, configuration examples, and documentation.
+11. Run the application and test both routes.
+12. Fix integration issues and regressions before finishing.
+
+Do not stop after producing a plan, mockup, or static frontend. Implement the functionality in the existing repository.
+
+If an API key, asset connector, vulnerability scanner, or other external dependency is missing, implement the integration interface and clearly document the required configuration. Never fabricate successful integration results.
+
+At completion, provide:
+
+- A summary of files changed.
+- The functionality implemented on each page.
+- The threat intelligence sources configured.
+- The AI provider and configuration required.
+- Database migration and startup commands.
+- Environment variables and external dependencies.
+- Tests executed and their actual results.
+- Remaining limitations or integrations requiring credentials.
+
+**Final goal:** `/recovery` should tell the security team how to fix devices that fail simulations, while `/threats` should tell them which global cyber threats matter to their environment, which assets are exposed, and what actions to take next.

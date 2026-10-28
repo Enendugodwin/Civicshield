@@ -156,6 +156,14 @@ export default function Reports() {
           </span>
         </div>
         <div className="card flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-slate-100">Threat exposure</span>
+          <span className="text-[12px] text-slate-500">advisories vs assets, JSON + CSV</span>
+          <span className="ml-auto flex gap-2">
+            <button className="btn-sec" onClick={() => dl('/api/reports/threats', 'threats-report.json')}>JSON</button>
+            <button className="btn-sec" onClick={() => dl('/api/reports/threats?format=csv', 'threats-report.csv')}>CSV</button>
+          </span>
+        </div>
+        <div className="card flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-slate-100">Audit log</span>
           <span className="text-[12px] text-slate-500">security-relevant changes, JSON</span>
           <span className="ml-auto flex gap-2">

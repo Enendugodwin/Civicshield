@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import Base, SessionLocal, engine
+from app.database import Base, SessionLocal, engine, get_db
 from app.models.models import (
     AssessmentResult,
     AssessmentRun,
@@ -26,7 +26,6 @@ from app.models.models import (
     RiskAssessment,
     Service,
     ThreatIndicator,
-    VerificationResult,
 )
 from app.schemas.schemas import AssetOut, RelationshipOut, ServiceOut
 from app import detection, review, vuln_intel
@@ -82,14 +81,6 @@ try:
     app.include_router(fixpilot_router)
 except Exception:
     pass
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 def role_of(authorization: str | None = None, x_role: str | None = None) -> str:
@@ -376,14 +367,7 @@ def api_risk_detail(fid: int, db: Session = Depends(get_db)):
 @app.get("/api/impact")
 def api_impact(asset_id: str, db: Session = Depends(get_db)):
     """Direct + downstream service impact for a simulated asset failure."""
-    edges: dict[str, list[str]] = {}
-    svc_of: dict[str, list[str]] = {}
-    for r in db.query(AssetRelationship).all():
-        s, t = str(r.source_id), str(r.target_id)
-        if r.source_type == "asset" and r.target_type == "asset":
-            edges.setdefault(s, []).append(t)
-        elif r.source_type == "asset" and r.target_type == "service":
-            svc_of.setdefault(t, []).append(s)
+    edges, svc_of = impact_engine.split_relationships(db.query(AssetRelationship).all())
     seen = {asset_id}
     parent: dict[str, str] = {}
     queue = [asset_id]
@@ -583,7 +567,7 @@ class FindingPatch(BaseModel):
 @app.patch("/api/findings/{fid}")
 def api_finding_patch(fid: int, body: FindingPatch, db: Session = Depends(get_db),
                       authorization: str | None = Header(default=None), x_role: str | None = Header(default=None)):
-    """Acknowledge, assign, investigate, resolve, or mark false positive — with a recorded reason."""
+    """Acknowledge, assign, investigate, resolve, or mark false positive â€” with a recorded reason."""
     require_role("operator", role_of(authorization, x_role))
     f = db.query(Finding).filter(Finding.id == fid).first()
     if not f:
@@ -647,116 +631,9 @@ def api_remediation_plan(fid: int, db: Session = Depends(get_db)):
                                  evidence=[f.detail] if f.detail else [])).model_dump()
 
 
-# ---- remediation aliases (spec paths) ----
-@app.post("/api/remediation-plans/{plan_id}/approve")
-def api_plan_approve(plan_id: str, db: Session = Depends(get_db),
-                     authorization: str | None = Header(default=None), x_role: str | None = Header(default=None)):
-    require_role("operator", role_of(authorization, x_role))
-    from app.fixpilot_store import set_status
-    rec = set_status(plan_id, "approved", actor=role_of(authorization, x_role))
-    if not rec:
-        raise HTTPException(404, "plan not found")
-    audit(db, role_of(authorization, x_role), "plan_approved", plan_id)
-    return rec.model_dump()
-
-
-def _apply_evidence_fix(rule_id: str, ev: dict) -> tuple[dict, str]:
-    """Simulated remediation: mutate stored evidence so the rule re-evaluates to PASS."""
-    import copy
-    from datetime import datetime, timezone
-    ev = copy.deepcopy(ev)
-    now = datetime.now(timezone.utc).isoformat()
-    note = ""
-    if rule_id == "BG-ASSET-001":
-        ev["owner"] = ev.get("owner") or "assigned-team"; note = "owner assigned"
-    elif rule_id == "BG-ASSET-004":
-        ev.setdefault("network", {})["remote_admin_exposed"] = False; note = "remote admin restricted"
-    elif rule_id == "BG-ASSET-005":
-        ev.setdefault("firewall", {})["ingress"] = "restricted"; note = "ingress restricted"
-    elif rule_id == "BG-ASSET-006":
-        ev.setdefault("services", {})["unnecessary"] = []; note = "unneeded services disabled"
-    elif rule_id == "BG-ID-001":
-        for a in ev.get("identity", {}).get("privileged_accounts", []): a["mfa"] = True
-        note = "MFA enforced on privileged accounts"
-    elif rule_id == "BG-ID-002":
-        ident = ev.setdefault("identity", {}); ident["admin_count"] = ident.get("max_admins", ident.get("admin_count", 1)); note = "excess admin grants removed"
-    elif rule_id == "BG-ID-003":
-        ev.setdefault("identity", {})["shared_admin_accounts"] = []; note = "shared accounts replaced"
-    elif rule_id == "BG-ID-004":
-        for a in ev.get("identity", {}).get("privileged_accounts", []): a["last_login"] = now
-        note = "stale accounts rotated"
-    elif rule_id == "BG-ID-005":
-        ev.setdefault("identity", {})["least_privilege_enforced"] = True; note = "least privilege enforced"
-    elif rule_id == "BG-ENDP-001":
-        ev.setdefault("endpoint", {})["edr_installed"] = True; note = "endpoint protection installed"
-    elif rule_id == "BG-ENDP-002":
-        ev.setdefault("endpoint", {})["logging_enabled"] = True; note = "logging enabled"
-    elif rule_id == "BG-ENDP-003":
-        ev.setdefault("endpoint", {})["monitoring_coverage"] = 0.9; note = "monitoring coverage extended"
-    elif rule_id == "BG-ENDP-004":
-        ev.setdefault("endpoint", {})["baseline_verified"] = True; note = "baseline verified"
-    elif rule_id in ("BG-ASSET-003", "BG-BKP-001"):
-        key = "patch" if rule_id == "BG-ASSET-003" else "backup"
-        stamp = "last_applied" if rule_id == "BG-ASSET-003" else "last_success"
-        ev.setdefault(key, {})[stamp] = now; note = "fresh patch/backup recorded"
-    elif rule_id == "BG-BKP-002":
-        ev.setdefault("backup", {})["immutable_backup"] = True; note = "immutable backup configured"
-    elif rule_id == "BG-BKP-003":
-        bkp = ev.setdefault("backup", {}); bkp["last_recovery_test"] = now; note = "recovery test recorded"
-    elif rule_id == "BG-BKP-004":
-        ev.setdefault("backup", {})["backup_target"] = "backup-server"; note = "backup dependency recorded"
-    elif rule_id == "BG-BKP-005":
-        ev.setdefault("backup", {})["recovery_procedure"] = "Restore from backup-server per runbook"; note = "recovery procedure documented"
-    else:
-        ev["remediated_note"] = f"simulated fix applied for {rule_id}"; note = "generic fix marker recorded"
-    return ev, note
-
-
-@app.post("/api/remediation/{plan_id}/apply")
-def api_plan_apply(plan_id: str, db: Session = Depends(get_db),
-                   authorization: str | None = Header(default=None), x_role: str | None = Header(default=None)):
-    """Apply a SIMULATED fix to stored evidence (demo only). Re-run the assessment to verify."""
-    require_role("operator", role_of(authorization, x_role))
-    from app.fixpilot_store import get_plan, save_plan
-    rec = get_plan(plan_id)
-    if not rec:
-        raise HTTPException(404, "plan not found")
-    if rec.status not in ("approved", "simulated"):
-        raise HTTPException(409, "approve and simulate the plan before applying")
-    try:
-        fid = int(rec.finding_id)
-    except (TypeError, ValueError):
-        raise HTTPException(422, "plan finding is not a stored finding")
-    f = db.query(Finding).filter(Finding.id == fid).first()
-    if not f:
-        raise HTTPException(404, "finding not found")
-    asset = db.query(Asset).filter(Asset.id == int(f.asset_id)).first() if str(f.asset_id).isdigit() else None
-    if not asset:
-        raise HTTPException(404, "finding asset not found")
-    fixed, note = _apply_evidence_fix(f.rule_id, json.loads(asset.evidence_json or "{}"))
-    asset.evidence_json = json.dumps(fixed)
-    asset.updated_at = time.time()
-    db.add(VerificationResult(plan_id=plan_id, passed=0, evidence=f"simulated fix applied: {note}; rerun assessment to verify"))
-    db.commit()
-    rec.payload["applied_fix"] = {"simulated": True, "rule_id": f.rule_id, "asset_id": f.asset_id, "note": note}
-    save_plan(rec)
-    audit(db, role_of(authorization, x_role), "fix_applied", f"plan={plan_id} rule={f.rule_id} asset={f.asset_id} (simulated)")
-    return {"plan_id": plan_id, "rule_id": f.rule_id, "asset_id": f.asset_id, "note": note, "simulated": True}
-
-
-@app.post("/api/remediation-plans/{plan_id}/simulate")
-def api_plan_simulate(plan_id: str, db: Session = Depends(get_db),
-                      authorization: str | None = Header(default=None), x_role: str | None = Header(default=None)):
-    require_role("operator", role_of(authorization, x_role))
-    from app.fixpilot_store import get_plan, save_plan, set_status
-    rec = get_plan(plan_id)
-    if not rec:
-        raise HTTPException(404, "plan not found")
-    rec.payload["simulation"] = {"simulated": True, "outcome": "simulated-success (advisory only)"}
-    save_plan(rec)
-    out = set_status(plan_id, "simulated", actor=role_of(authorization, x_role), simulated=True)
-    audit(db, role_of(authorization, x_role), "plan_simulated", plan_id)
-    return out.model_dump() if out else {}
+# ---- remediation lifecycle lives in app.fixpilot_router (single API) ----
+# Finding-scoped helpers (explain + remediation-plan preview) stay here because
+# the MCP server and the Findings page use them directly.
 
 
 # ---- recovery ----
@@ -782,22 +659,7 @@ def api_recovery_scenarios():
 
 @app.get("/api/recovery/readiness")
 def api_recovery_readiness(db: Session = Depends(get_db)):
-    """Per-service recovery readiness against documented criteria (Function 14)."""
-    services = db.query(Service).order_by(Service.id).all()
-    out = []
-    for s in services:
-        deps = db.query(AssetRelationship).filter(
-            AssetRelationship.source_type == "asset", AssetRelationship.target_type == "service",
-            AssetRelationship.target_id == s.id).all()
-        criteria = {
-            "recovery_procedure": bool((s.recovery_procedure or "").strip()),
-            "backup_dependency": len(deps) > 0,
-            "rto_configured": (s.rto_minutes or 0) > 0,
-        }
-        failed = [k for k, v in criteria.items() if not v]
-        out.append({"service_id": s.id, "service": s.name, "rto_minutes": s.rto_minutes,
-                    "criteria": criteria, "ready": not failed, "failed_criteria": failed})
-    return {"services": out,
+    return {"services": review.service_readiness(db),
             "note": "A service without a documented procedure, backup dependency, or RTO is not shown as ready."}
 
 
@@ -807,14 +669,7 @@ def api_recovery_run(body: ScenarioIn, db: Session = Depends(get_db)):
     spec = SCENARIO_DEFS.get(body.scenario_id)
     if not spec:
         raise HTTPException(404, "unknown scenario")
-    graph: dict[str, list[str]] = {}
-    svc_deps: dict[str, list[str]] = {}
-    for r in db.query(AssetRelationship).all():
-        s, t = str(r.source_id), str(r.target_id)
-        if r.source_type == "asset" and r.target_type == "asset":
-            graph.setdefault(s, []).append(t)
-        elif r.source_type == "asset" and r.target_type == "service":
-            svc_deps.setdefault(t, []).append(s)
+    graph, svc_deps = impact_engine.split_relationships(db.query(AssetRelationship).all())
     affected: set[str] = set()
     for fa in spec["failed_assets"]:
         affected.add(fa)
@@ -859,6 +714,73 @@ def api_recovery_one(run_id: int, db: Session = Depends(get_db)):
     if not r:
         raise HTTPException(404, "run not found")
     return {"run_id": r.id, "result": json.loads(r.result_json)}
+
+
+@app.post("/api/recovery/runs/{run_id}/recommendations")
+def api_recovery_recommendations(run_id: int, db: Session = Depends(get_db),
+                                 authorization: str | None = Header(default=None),
+                                 x_role: str | None = Header(default=None)):
+    """AI-assisted remediation for assets taken down in a recovery scenario.
+
+    For each scenario failed asset (plus any non-success step asset) with open
+    findings, generates and stores one FixPilot plan (cap 5 plans per call).
+    Assets without findings are reported honestly instead of inventing
+    recommendations.
+    """
+    require_role("operator", role_of(authorization, x_role))
+    _check_rate("recovery:recommendations")
+    import uuid
+    from app.ai import ai_service
+    from app.ai.schemas import FindingContext
+    from app.fixpilot_store import PlanRecord, save_plan
+    from app.models.models import RecoveryRun as RR
+    r = db.query(RR).filter(RR.id == run_id).first()
+    if not r:
+        raise HTTPException(404, "run not found")
+    res = json.loads(r.result_json)
+    steps = {str(s.get("asset") or ""): s for s in res.get("steps", [])}
+    targets = list(dict.fromkeys(
+        [str(a) for a in res.get("scenario", {}).get("failed_assets", [])]
+        + [aid for aid, s in steps.items() if s.get("status") != "success"]))
+    names = {str(a.id): (a.name or "") for a in db.query(Asset).all()}
+    recs: list = []
+    planned = 0
+    for aid in targets:
+        s = steps.get(aid, {})
+        base = {"asset_id": aid, "asset_name": names.get(aid, aid),
+                "step_id": s.get("id", ""), "step_status": s.get("status", ""),
+                "step_note": s.get("note", ""), "finding_id": None,
+                "plan_id": None, "status": "no_findings"}
+        if planned >= 5:
+            base["note"] = "Plan cap reached (5); review the remaining findings manually."
+            recs.append(base)
+            continue
+        f = (db.query(Finding)
+             .filter(Finding.asset_id == aid,
+                     ~Finding.workflow.in_(("resolved", "false_positive")))
+             .order_by(Finding.id).first())
+        if f is None:
+            base["note"] = ("No open findings recorded for this asset - run evidence "
+                            "collection/detection first; no recommendation invented.")
+            recs.append(base)
+            continue
+        plan = ai_service.generate_remediation(FindingContext(
+            finding_id=str(f.id), rule_id=f.rule_id or "UNKNOWN",
+            title=f.rule_id or "", severity=f.severity or "unknown",
+            asset_id=str(f.asset_id or ""),
+            evidence=[f.detail or "",
+                      f"recovery step {s.get('id', '')}: {s.get('note', '')}"]))
+        rec = save_plan(PlanRecord(id=f"plan-{uuid.uuid4().hex[:8]}",
+                                   finding_id=str(f.id), payload=plan.model_dump()))
+        planned += 1
+        base.update({"finding_id": f.id, "rule_id": f.rule_id, "plan_id": rec.id,
+                     "status": "planned",
+                     "plain_language": rec.payload.get("plain_language", ""),
+                     "corrective_action": rec.payload.get("corrective_action", ""),
+                     "model_used": rec.payload.get("model_used", "unknown"),
+                     "note": ""})
+        recs.append(base)
+    return {"run_id": run_id, "recommendations": recs}
 
 
 # ---- incidents / threat intel / audit / reports ----
@@ -1024,7 +946,7 @@ def api_incident_summary(iid: int, db: Session = Depends(get_db)):
         model = "fallback"
     return {"incident_id": iid, "summary": summary, "model_used": model,
             "missing_evidence": gaps, "simulated": True,
-            "note": "Summary only — timestamps and events are never invented."}
+            "note": "Summary only â€” timestamps and events are never invented."}
 
 
 @app.get("/api/incidents/{iid}/report")
@@ -1080,7 +1002,7 @@ def api_review_posture(focus: str = "all", audience: str = "technical",
 
 @app.get("/api/reports/posture")
 def api_reports_posture(db: Session = Depends(get_db)):
-    """Executive posture report: aggregate counts, top risks, readiness — with provenance metadata."""
+    """Executive posture report: aggregate counts, top risks, readiness â€” with provenance metadata."""
     findings = api_findings(db)
     services = api_services(db)
     ready = api_recovery_readiness(db)["services"]
@@ -1096,6 +1018,43 @@ def api_reports_posture(db: Session = Depends(get_db)):
             "recovery_readiness": [{"service": s["service"], "ready": s["ready"],
                                     "failed_criteria": s["failed_criteria"]} for s in ready],
             "limitations": "Synthetic demo data. Scores are deterministic v1 model outputs, not CVSS."}
+
+
+@app.get("/api/reports/threats")
+def api_reports_threats(format: str = "json", db: Session = Depends(get_db)):
+    """Threat exposure report: JSON by default, CSV with formula-guard (?format=csv)."""
+    import csv
+    import io
+    from fastapi.responses import PlainTextResponse
+    from app import vuln_intel
+    advisories = []
+    for adv in vuln_intel._advisories():
+        confirmed, potential, unevaluated = _advisory_exposure(db, adv)
+        advisories.append({
+            "id": adv.id, "title": adv.title, "severity": adv.severity,
+            "cvss": adv.cvss, "known_exploited": adv.known_exploited,
+            "fixed": adv.fixed, "url": adv.url,
+            "confirmed": confirmed, "potential": potential, "unevaluated": unevaluated,
+        })
+    if format == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["advisory_id", "title", "severity", "cvss", "known_exploited",
+                    "match", "asset_id", "asset_name", "package", "version", "fixed", "url"])
+        for adv in advisories:
+            for match, entries in (("confirmed", adv["confirmed"]), ("potential", adv["potential"])):
+                for e in entries:
+                    w.writerow([_csv_cell(adv["id"]), _csv_cell(adv["title"]),
+                                _csv_cell(adv["severity"]), adv["cvss"],
+                                adv["known_exploited"], match,
+                                _csv_cell(e["asset_id"]), _csv_cell(e["asset_name"]),
+                                _csv_cell(e["package"]), _csv_cell(e["version"]),
+                                _csv_cell(adv["fixed"]), _csv_cell(adv["url"])])
+        return PlainTextResponse(buf.getvalue(), media_type="text/csv")
+    if format != "json":
+        raise HTTPException(422, "format must be json or csv")
+    return {"generated_at": time.time(), "snapshot": vuln_intel.snapshot()["snapshot"],
+            "source": "bundled", "advisories": advisories}
 
 
 @app.get("/api/reports/{rtype}")
@@ -1147,6 +1106,222 @@ def api_indicators(db: Session = Depends(get_db)):
     return [{"value": r.value, "kind": r.kind, "confidence": r.confidence, "source": r.source or "",
              "expired": r.expires_at < now, "expires_at": r.expires_at}
             for r in db.query(ThreatIndicator).all()]
+
+
+_RATE_BUCKETS: dict = {}
+
+
+def _check_rate(key: str, limit: int = 10, window: float = 60.0) -> None:
+    """In-memory fixed-window rate limiter for expensive endpoints."""
+    now = time.monotonic()
+    count, start = _RATE_BUCKETS.get(key, (0, now))
+    if now - start >= window:
+        count, start = 0, now
+    count += 1
+    _RATE_BUCKETS[key] = (count, start)
+    if count > limit:
+        retry = int(window - (now - start)) + 1
+        raise HTTPException(429, f"rate limit exceeded for {key}; retry in {retry}s",
+                            headers={"Retry-After": str(retry)})
+
+
+def _match_packages(adv, pkgs: list, aid: str, aname: str) -> tuple[list, list]:
+    """Split declared packages into confirmed/potential matches for one advisory."""
+    from app import vuln_intel
+    confirmed, potential = [], []
+    for p in pkgs:
+        if not any(adv.matches_product(n) for n in (p["name"], p.get("package") or "")):
+            continue
+        entry = {"asset_id": aid, "asset_name": aname,
+                 "package": p["name"], "version": p["version"]}
+        if vuln_intel.satisfies(p["version"], adv.affected):
+            confirmed.append(entry)
+        else:
+            potential.append(entry)
+    return confirmed, potential
+
+
+def _advisory_exposure(db: Session, adv) -> tuple[list, list, list]:
+    """Correlate one bundled advisory with declared asset software.
+
+    Returns (confirmed, potential, unevaluated). Confirmed = product matches
+    and the declared version falls in the advisory affected range. Potential =
+    product matches but no declared version can be evaluated. Unevaluated =
+    the asset declares no software inventory at all.
+    """
+    from app import vuln_intel
+    confirmed, potential, unevaluated = [], [], []
+    for a in db.query(Asset).filter(Asset.retired == 0).all():
+        aid, aname = str(a.id), a.name or ""
+        pkgs = vuln_intel.normalize_software(detection._evidence(a))
+        if not pkgs:
+            unevaluated.append({"asset_id": aid, "asset_name": aname})
+            continue
+        c, p = _match_packages(adv, pkgs, aid, aname)
+        confirmed.extend(c)
+        potential.extend(p)
+    return confirmed, potential, unevaluated
+
+
+@app.get("/api/threats/exposure")
+def api_threat_exposure(db: Session = Depends(get_db)):
+    """Exposure of active assets to bundled threat advisories (offline-safe)."""
+    from app import vuln_intel
+    advisories = []
+    for adv in vuln_intel._advisories():
+        confirmed, potential, unevaluated = _advisory_exposure(db, adv)
+        advisories.append({
+            "id": adv.id, "title": adv.title, "severity": adv.severity,
+            "cvss": adv.cvss, "known_exploited": adv.known_exploited,
+            "fixed": adv.fixed, "url": adv.url, "limitation": adv.limitation,
+            "recommended_action": (
+                f"Upgrade {adv.product} to {adv.fixed} or later following the vendor "
+                f"advisory. Compensating control until patched: {adv.limitation}"),
+            "confirmed": confirmed, "potential": potential, "unevaluated": unevaluated,
+        })
+    return {"snapshot": vuln_intel.snapshot()["snapshot"], "source": "bundled",
+            "advisories": advisories}
+
+
+class ThreatAnalysisIn(BaseModel):
+    advisory_id: str
+
+
+@app.post("/api/threats/analysis", status_code=201)
+def api_threat_analysis(body: ThreatAnalysisIn, db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    """AI-assisted analysis of one advisory, grounded in exposure evidence.
+
+    The plan is stored in the FixPilot queue (finding_id = advisory id) so it
+    follows the normal approve -> simulate -> verify workflow.
+    """
+    require_role("operator", role_of(authorization, x_role))
+    _check_rate("threats:analysis")
+    import uuid
+    from app import vuln_intel
+    from app.ai import ai_service
+    from app.ai.schemas import FindingContext
+    from app.fixpilot_store import PlanRecord, save_plan
+    adv = vuln_intel.advisory_for((body.advisory_id or "").strip())
+    if adv is None:
+        raise HTTPException(404, "unknown advisory")
+    confirmed, potential, unevaluated = _advisory_exposure(db, adv)
+    evidence = (
+        [f"confirmed: {c['package']}@{c['version']} on {c['asset_name']} ({c['asset_id']})"
+         for c in confirmed[:10]]
+        + [f"potential: {p['package']} on {p['asset_name']} ({p['asset_id']})"
+           for p in potential[:10]]
+        + [f"advisory:{adv.source}", f"fixed:{adv.fixed}"]
+    )
+    if unevaluated:
+        evidence.append(f"{len(unevaluated)} asset(s) have no software inventory; scope unconfirmed there")
+    if not confirmed and not potential:
+        evidence.append("No asset in inventory declares the affected product")
+    plan = ai_service.generate_remediation(FindingContext(
+        finding_id=adv.id, rule_id=adv.id, title=adv.title,
+        severity=adv.severity, asset_id="",
+        evidence=evidence,
+        service_impact=(f"Confirmed on {len(confirmed)} asset(s), "
+                        f"potential on {len(potential)} asset(s).")))
+    rec = save_plan(PlanRecord(id=f"plan-{uuid.uuid4().hex[:8]}",
+                               finding_id=adv.id, payload=plan.model_dump()))
+    return {"plan_id": rec.id,
+            "model_used": rec.payload.get("model_used", "unknown"),
+            "plan": rec.payload}
+
+
+@app.get("/api/assets/{asset_id}/threats")
+def api_asset_threats(asset_id: int, db: Session = Depends(get_db)):
+    """Advisories affecting one asset, with match evidence (confirmed/potential)."""
+    from app import vuln_intel
+    a = db.query(Asset).filter(Asset.id == asset_id, Asset.retired == 0).first()
+    if not a:
+        raise HTTPException(404, "asset not found")
+    pkgs = vuln_intel.normalize_software(detection._evidence(a))
+    matches = []
+    for adv in vuln_intel._advisories():
+        confirmed, potential = _match_packages(adv, pkgs, str(a.id), a.name or "")
+        if confirmed or potential:
+            matches.append({
+                "id": adv.id, "title": adv.title, "severity": adv.severity,
+                "cvss": adv.cvss, "known_exploited": adv.known_exploited,
+                "fixed": adv.fixed, "url": adv.url,
+                "recommended_action": (
+                    f"Upgrade {adv.product} to {adv.fixed} or later following the vendor "
+                    f"advisory. Compensating control until patched: {adv.limitation}"),
+                "confirmed": confirmed, "potential": potential,
+            })
+    return {"asset_id": a.id, "asset_name": a.name or "", "hostname": a.hostname or "",
+            "criticality": a.criticality or "",
+            "software": pkgs, "inventory_empty": not pkgs,
+            "inventory_note": ("No software inventory declared for this asset; exposure "
+                               "cannot be evaluated." if not pkgs else ""),
+            "matches": matches}
+
+
+_SYNC_FILE = _Path(__file__).resolve().parent.parent / "data" / "threat_sync.json"
+
+
+def _read_sync() -> dict:
+    try:
+        return json.loads(_SYNC_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_sync(record: dict) -> dict:
+    _SYNC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SYNC_FILE.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
+
+
+@app.get("/api/threats/sync-status")
+def api_threat_sync_status():
+    """Feed health: last controlled sync, bundled snapshot, OSV cache size."""
+    from app import vuln_intel
+    rec = _read_sync()
+    try:
+        cache_entries = len(vuln_intel._load_cache())
+    except OSError:
+        cache_entries = 0
+    return {"last_sync": rec or None,
+            "never_synced": not bool(rec),
+            "bundled_snapshot": vuln_intel.snapshot()["snapshot"],
+            "bundled_advisories": len(vuln_intel._advisories()),
+            "osv_cache_entries": cache_entries,
+            "setup_note": ("No live sync has run yet. Bundled advisories are always available; "
+                           "POST /api/threats/sync (operator) refreshes OSV.dev data for "
+                           "declared packages. Sync failures are recorded, never hidden.")}
+
+
+@app.post("/api/threats/sync")
+def api_threat_sync(db: Session = Depends(get_db),
+                    authorization: str | None = Header(default=None),
+                    x_role: str | None = Header(default=None)):
+    """Controlled feed sync: OSV.dev refresh for declared software (cached, capped).
+
+    Never touches assets; only enriches the local vulnerability cache. Failures
+    are recorded in the sync record with ok=false.
+    """
+    require_role("operator", role_of(authorization, x_role))
+    _check_rate("threats:sync", limit=5, window=300.0)
+    import time as _time
+    from app import vuln_intel
+    started = _time.time()
+    seen: dict = {}
+    for a in db.query(Asset).filter(Asset.retired == 0).all():
+        for p in vuln_intel.normalize_software(detection._evidence(a)):
+            seen[(p.get("ecosystem") or "", p["name"], p["version"])] = p
+    findings, warnings = vuln_intel.osv_query(list(seen.values()))
+    record = {"started_at": started, "finished_at": _time.time(),
+              "assets_scanned": db.query(Asset).filter(Asset.retired == 0).count(),
+              "packages_queried": len(seen),
+              "osv_findings": len(findings),
+              "warnings": warnings,
+              "ok": not warnings,
+              "note": "" if not warnings else "OSV.dev unreachable or incomplete; bundled advisories still apply."}
+    return _write_sync(record)
 
 
 @app.post("/api/demo/reset")

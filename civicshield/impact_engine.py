@@ -39,6 +39,23 @@ def priority_for(score: float) -> str:
     return "Informational"
 
 
+def split_relationships(rows: Sequence[Any]) -> tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """Split relationship rows into asset->asset edges and service->assets maps.
+
+    Single owner for the graph-building loop previously inlined in both
+    /api/impact and /api/recovery/runs. Keys are stringified ids.
+    """
+    edges: Dict[str, List[str]] = {}
+    svc_deps: Dict[str, List[str]] = {}
+    for r in rows:
+        s, t = str(r.source_id), str(r.target_id)
+        if r.source_type == "asset" and r.target_type == "asset":
+            edges.setdefault(s, []).append(t)
+        elif r.source_type == "asset" and r.target_type == "service":
+            svc_deps.setdefault(t, []).append(s)
+    return edges, svc_deps
+
+
 def traverse_service_impact(start_asset: str,
                             edges: Mapping[str, Sequence[str]],
                             services: Mapping[str, Sequence[str]] | None = None) -> Dict[str, Any]:
