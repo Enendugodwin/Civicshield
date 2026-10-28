@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 try:
     from .ai import ai_service
     from .ai.schemas import FindingContext
     from .fixpilot_store import PlanRecord, get_plan, list_audit, save_plan, set_status
+    from .security import require_role, role_of
 except ImportError:  # allow flat sys.path import in tests
     from ai import ai_service
     from ai.schemas import FindingContext
     from fixpilot_store import PlanRecord, get_plan, list_audit, save_plan, set_status
+    from security import require_role, role_of
 
 router = APIRouter(prefix="/api/remediation", tags=["remediation"])
 
@@ -27,7 +29,9 @@ class ActorRequest(BaseModel):
 
 
 @router.post("/propose", response_model=PlanRecord)
-def propose(req: ProposeRequest):
+def propose(req: ProposeRequest, authorization: str | None = Header(default=None),
+             x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
     plan = ai_service.generate_remediation(FindingContext(**req.model_dump()))
     rec = PlanRecord(id=f"plan-{uuid.uuid4().hex[:8]}", finding_id=req.finding_id,
                      payload=plan.model_dump())
@@ -35,7 +39,10 @@ def propose(req: ProposeRequest):
 
 
 @router.post("/{plan_id}/approve", response_model=PlanRecord)
-def approve(plan_id: str, req: ActorRequest | None = None):
+def approve(plan_id: str, req: ActorRequest | None = None,
+            authorization: str | None = Header(default=None),
+            x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
     rec = set_status(plan_id, "approved", actor=(req.actor if req else "operator"))
     if not rec:
         raise HTTPException(404, "plan not found")
@@ -43,7 +50,10 @@ def approve(plan_id: str, req: ActorRequest | None = None):
 
 
 @router.post("/{plan_id}/reject", response_model=PlanRecord)
-def reject(plan_id: str, req: ActorRequest | None = None):
+def reject(plan_id: str, req: ActorRequest | None = None,
+           authorization: str | None = Header(default=None),
+           x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
     rec = set_status(plan_id, "rejected", actor=(req.actor if req else "operator"))
     if not rec:
         raise HTTPException(404, "plan not found")
@@ -51,8 +61,11 @@ def reject(plan_id: str, req: ActorRequest | None = None):
 
 
 @router.post("/{plan_id}/simulate", response_model=PlanRecord)
-def simulate(plan_id: str, req: ActorRequest | None = None):
+def simulate(plan_id: str, req: ActorRequest | None = None,
+             authorization: str | None = Header(default=None),
+             x_role: str | None = Header(default=None)):
     """Simulated execution only: labels result simulated, records outcome."""
+    require_role("operator", role_of(authorization, x_role))
     rec = get_plan(plan_id)
     if not rec:
         raise HTTPException(404, "plan not found")
@@ -78,8 +91,11 @@ class VerifyRequest(BaseModel):
 
 
 @router.post("/{plan_id}/verify", response_model=PlanRecord)
-def verify(plan_id: str, req: VerifyRequest):
+def verify(plan_id: str, req: VerifyRequest,
+           authorization: str | None = Header(default=None),
+           x_role: str | None = Header(default=None)):
     """Never claims success until checks actually pass: requires checks_passed."""
+    require_role("operator", role_of(authorization, x_role))
     rec = get_plan(plan_id)
     if not rec:
         raise HTTPException(404, "plan not found")
@@ -92,8 +108,11 @@ def verify(plan_id: str, req: VerifyRequest):
 
 
 @router.post("/{plan_id}/reopen", response_model=PlanRecord)
-def reopen(plan_id: str, req: ActorRequest | None = None):
+def reopen(plan_id: str, req: ActorRequest | None = None,
+           authorization: str | None = Header(default=None),
+           x_role: str | None = Header(default=None)):
     """Reopen a verified plan for rework; retains history via the audit log."""
+    require_role("operator", role_of(authorization, x_role))
     rec = get_plan(plan_id)
     if not rec:
         raise HTTPException(404, "plan not found")

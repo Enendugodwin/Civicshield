@@ -93,19 +93,13 @@ def get_db():
 
 
 def role_of(authorization: str | None = None, x_role: str | None = None) -> str:
-    if x_role in ("admin", "operator", "viewer"):
-        return x_role
-    if authorization and "admin" in authorization:
-        return "admin"
-    if authorization and "operator" in authorization:
-        return "operator"
-    return "viewer"
+    from app.security import role_of as _role_of
+    return _role_of(authorization, x_role)
 
 
 def require_role(minimum: str, role: str):
-    order = {"viewer": 0, "operator": 1, "admin": 2}
-    if order.get(role, 0) < order[minimum]:
-        raise HTTPException(403, "insufficient role")
+    from app.security import require_role as _require_role
+    _require_role(minimum, role)
 
 
 @app.get("/api/me")
@@ -215,10 +209,16 @@ def api_asset_patch(asset_id: int, body: dict, db: Session = Depends(get_db),
     r = db.query(Asset).filter(Asset.id == asset_id).first()
     if not r:
         raise HTTPException(404, "asset not found")
+    # "retired" is admin-only (DELETE endpoint); "evidence_json" is written
+    # only through the validated collector endpoint below. Allowing either
+    # here would let an operator bypass retirement policy or forge evidence
+    # that makes future rules evaluate to PASS.
     allowed = {"name", "kind", "hostname", "owner", "os_name", "environment", "zone",
-               "criticality", "criticality_reason", "status", "retired", "evidence_json"}
+               "criticality", "criticality_reason", "status"}
     for k, v in body.items():
         if k in allowed:
+            if isinstance(v, str) and len(v) > 120:
+                raise HTTPException(422, f"{k} too long (max 120 chars)")
             setattr(r, k, v)
     r.updated_at = time.time()
     db.commit()
@@ -266,6 +266,12 @@ def api_relationship_create(body: RelationshipIn, db: Session = Depends(get_db),
     require_role("operator", role_of(authorization, x_role))
     if body.source_type not in ("asset", "service") or body.target_type not in ("asset", "service"):
         raise HTTPException(422, "source/target type must be asset or service")
+    for side, kind, rid in (("source", body.source_type, body.source_id),
+                            ("target", body.target_type, body.target_id)):
+        exists = (db.query(Asset).filter(Asset.id == rid).first() if kind == "asset"
+                  else db.query(Service).filter(Service.id == rid).first())
+        if not exists:
+            raise HTTPException(404, f"{side} {kind} {rid} not found")
     if db.query(AssetRelationship).filter(
             AssetRelationship.source_type == body.source_type, AssetRelationship.source_id == body.source_id,
             AssetRelationship.target_type == body.target_type, AssetRelationship.target_id == body.target_id,
@@ -631,8 +637,14 @@ def api_remediation_plan(fid: int, db: Session = Depends(get_db)):
                                                               asset_id=str(f.asset_id), evidence=[f.detail]))
         return plan.model_dump()
     except Exception:
-        return {"finding_id": str(fid), "corrective_action": "Apply documented fix", "verification_steps": ["Re-run assessment"],
-                "model_used": "fallback", "simulated": True}
+        # Schema-validated offline fallback: never return a hand-built dict
+        # missing required plan fields.
+        from app.ai.deterministic_fallback import fallback_plan
+        from app.ai.schemas import FindingContext as Ctx
+        return fallback_plan(Ctx(finding_id=str(f.id), rule_id=f.rule_id,
+                                 title=f.rule_id, severity=f.severity,
+                                 asset_id=str(f.asset_id),
+                                 evidence=[f.detail] if f.detail else [])).model_dump()
 
 
 # ---- remediation aliases (spec paths) ----
@@ -851,9 +863,9 @@ def api_recovery_one(run_id: int, db: Session = Depends(get_db)):
 
 # ---- incidents / threat intel / audit / reports ----
 class IncidentIn(BaseModel):
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
     severity: str = "medium"
-    commander: str = ""
+    commander: str = Field(default="", max_length=120)
 
 
 @app.post("/api/incidents", status_code=201)
@@ -909,7 +921,7 @@ def api_incident_detail(iid: int, db: Session = Depends(get_db)):
 
 class IncidentPatch(BaseModel):
     status: str | None = None
-    commander: str | None = None
+    commander: str | None = Field(default=None, max_length=120)
     severity: str | None = None
 
 
@@ -1111,7 +1123,16 @@ class IndicatorIn(BaseModel):
 
 
 @app.post("/api/threat-indicators", status_code=201)
-def api_indicator_add(body: IndicatorIn, db: Session = Depends(get_db)):
+def api_indicator_add(body: IndicatorIn, db: Session = Depends(get_db),
+                      authorization: str | None = Header(default=None),
+                      x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    if body.kind not in ("domain", "url", "hash", "campaign", "ip"):
+        raise HTTPException(422, "kind must be domain, url, hash, campaign, or ip")
+    if body.confidence not in ("low", "medium", "high"):
+        raise HTTPException(422, "confidence must be low, medium, or high")
+    if len(body.value) > 512 or len(body.source) > 120:
+        raise HTTPException(422, "indicator value/source too long")
     if db.query(ThreatIndicator).filter(ThreatIndicator.value == body.value).first():
         raise HTTPException(409, "duplicate indicator")
     r = ThreatIndicator(**body.model_dump(), expires_at=time.time() + 90 * 86400)

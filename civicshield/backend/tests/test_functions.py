@@ -125,15 +125,99 @@ def test_remediation_reopen():
     seed()
     assert client.post("/api/assessments/run").status_code == 200
     fid = client.get("/api/findings").json()[0]["id"]
-    pid = client.post("/api/remediation/propose", json={"finding_id": str(fid)}).json()["id"]
-    assert client.post(f"/api/remediation/{pid}/reopen", json={"actor": "op"}).status_code == 409
-    client.post(f"/api/remediation/{pid}/approve", json={"actor": "op"})
-    client.post(f"/api/remediation/{pid}/simulate", json={"actor": "op"})
-    client.post(f"/api/remediation/{pid}/verify", json={"checks_passed": True, "actor": "op"})
-    r = client.post(f"/api/remediation/{pid}/reopen", json={"actor": "op"})
+    pid = client.post("/api/remediation/propose", json={"finding_id": str(fid)}, headers=OP).json()["id"]
+    assert client.post(f"/api/remediation/{pid}/reopen", json={"actor": "op"}, headers=OP).status_code == 409
+    client.post(f"/api/remediation/{pid}/approve", json={"actor": "op"}, headers=OP)
+    client.post(f"/api/remediation/{pid}/simulate", json={"actor": "op"}, headers=OP)
+    client.post(f"/api/remediation/{pid}/verify", json={"checks_passed": True, "actor": "op"}, headers=OP)
+    r = client.post(f"/api/remediation/{pid}/reopen", json={"actor": "op"}, headers=OP)
     assert r.json()["status"] == "approved"
     trail = [e["action"] for e in client.get(f"/api/remediation/{pid}/audit").json()["events"]]
     assert "plan_verified" in trail and "plan_approved" in trail
+
+
+def test_remediation_plan_fallback_stays_schema_valid(monkeypatch):
+    from app.ai import ai_service
+    from app.ai.schemas import RemediationPlanPayload
+    seed()
+    assert client.post("/api/assessments/run").status_code == 200
+    fid = client.get("/api/findings").json()[0]["id"]
+
+    def _down(*a, **k):
+        raise RuntimeError("model down")
+    monkeypatch.setattr(ai_service, "generate_remediation", _down)
+    r = client.post(f"/api/findings/{fid}/remediation-plan")
+    assert r.status_code == 200, r.text
+    plan = RemediationPlanPayload.model_validate(r.json())  # must not raise
+    assert plan.model_used == "fallback" and plan.verification_steps
+
+
+def test_relationship_requires_existing_endpoints():
+    seed()
+    missing_src = {"source_type": "asset", "source_id": 999999,
+                   "target_type": "asset", "target_id": 1, "rel": "depends-on"}
+    assert client.post("/api/relationships", json=missing_src, headers=OP).status_code == 404
+    missing_tgt = {"source_type": "asset", "source_id": 1,
+                   "target_type": "service", "target_id": 999999, "rel": "depends-on"}
+    assert client.post("/api/relationships", json=missing_tgt, headers=OP).status_code == 404
+    ok = {"source_type": "asset", "source_id": 1,
+          "target_type": "service", "target_id": 1, "rel": "depends-on"}
+    assert client.post("/api/relationships", json=ok, headers=OP).status_code == 201
+
+
+def test_threat_indicator_validation_and_auth():
+    seed()
+    probe = {"value": "t1.example", "kind": "domain"}
+    assert client.post("/api/threat-indicators", json=probe).status_code == 403
+    bad_kind = client.post("/api/threat-indicators",
+                           json={"value": "t1.example", "kind": "bogus"}, headers=OP)
+    assert bad_kind.status_code == 422, bad_kind.text
+    bad_conf = client.post("/api/threat-indicators",
+                           json={"value": "t1.example", "confidence": "certain"}, headers=OP)
+    assert bad_conf.status_code == 422, bad_conf.text
+    assert client.post("/api/threat-indicators", json=probe, headers=OP).status_code == 201
+    dup = client.post("/api/threat-indicators", json=probe, headers=OP)
+    assert dup.status_code == 409, dup.text
+
+
+def test_incident_field_lengths():
+    seed()
+    long_title = client.post("/api/incidents", json={"title": "x" * 201})
+    assert long_title.status_code == 422, long_title.status_code
+    long_commander = client.post("/api/incidents", json={"title": "ok", "commander": "y" * 121})
+    assert long_commander.status_code == 422, long_commander.status_code
+
+
+def test_asset_patch_value_lengths():
+    seed()
+    r = client.patch("/api/assets/1", json={"name": "n" * 121}, headers=OP)
+    assert r.status_code == 422, r.text
+    r = client.patch("/api/assets/1", json={"name": "n" * 120}, headers=OP)
+    assert r.status_code == 200, r.text
+
+
+def test_payload_size_caps_enforced():
+    seed()
+    big = {"k": "x" * (600 * 1024)}
+    r = client.post("/api/assets/1/evidence", json={"evidence": big}, headers=OP)
+    assert r.status_code == 413, r.status_code
+    csv_text = "name,kind\n" + "a,server\n" * 30000
+    r = client.post("/api/assets/import", json={"csv_text": csv_text}, headers=OP)
+    assert r.status_code == 413, r.status_code
+
+
+def test_asset_patch_cannot_retire_or_forge_evidence():
+    seed()
+    before = client.get("/api/assets/1").json()
+    r = client.patch("/api/assets/1", json={"name": "renamed-one", "retired": 1,
+                                            "evidence_json": "{\"owner\": \"mallory\"}"}, headers=OP)
+    assert r.status_code == 200, r.text
+    after = client.get("/api/assets/1").json()
+    assert after["name"] == "renamed-one"  # allowed fields still work
+    assert after["evidence"] == before["evidence"]  # evidence_json not writable here
+    ids = [a["id"] for a in client.get("/api/assets").json()]
+    assert 1 in ids  # retired=1 would have hidden the asset from listings
+    assert client.delete("/api/assets/1", headers=OP).status_code == 403  # retire stays admin-only
 
 
 def test_import_duplicate_detection():

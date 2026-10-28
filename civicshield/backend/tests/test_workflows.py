@@ -50,10 +50,11 @@ def test_verify_the_fix_loop():
     assert any(r["outcome"] == "FAIL" for r in before if r["rule_id"] == "BG-ASSET-001" and r["asset_id"] == "1")
 
     plan = client.post("/api/remediation/propose", json={"finding_id": str(target["id"]), "rule_id": target["rule_id"],
-                                                         "severity": target["severity"], "asset_id": "1"}).json()
+                                                         "severity": target["severity"], "asset_id": "1"},
+                       headers=OP).json()
     pid = plan["id"]
-    assert client.post(f"/api/remediation/{pid}/approve", json={"actor": "operator"}).status_code == 200
-    assert client.post(f"/api/remediation/{pid}/simulate", json={"actor": "operator"}).status_code == 200
+    assert client.post(f"/api/remediation/{pid}/approve", json={"actor": "operator"}, headers=OP).status_code == 200
+    assert client.post(f"/api/remediation/{pid}/simulate", json={"actor": "operator"}, headers=OP).status_code == 200
     applied = client.post(f"/api/remediation/{pid}/apply", headers=OP)
     assert applied.status_code == 200, applied.text
     assert applied.json()["simulated"] is True
