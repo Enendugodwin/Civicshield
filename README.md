@@ -60,6 +60,18 @@ assessments, recovery runs, threat exposure, and the audit log.
 
 ![Reports and exports](civicshield/docs/screenshots/09-reports-exports.png)
 
+**Infrastructure Map** — dependency graph of the water utility (13 assets,
+23 relationships) with asset-type coloring, critical-path highlighting,
+and verified-link management.
+
+![Infrastructure map](civicshield/docs/screenshots/10-infra-map.png)
+
+**Service Health** — executive lens with posture strip, affected-assets
+intelligence map on live geography, priority queue, region/status/severity
+table, and recovery objectives.
+
+![Service health](civicshield/docs/screenshots/11-service-health.png)
+
 ## Quickstart
 
 Backend (FastAPI, SQLite demo DB):
