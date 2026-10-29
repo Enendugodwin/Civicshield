@@ -21,3 +21,6 @@ civicshield/frontend/node_modules/
 
 # Test artifacts
 civicshield/backend/tests/tmp_*.db
+
+*.db-shm
+*.db-wal

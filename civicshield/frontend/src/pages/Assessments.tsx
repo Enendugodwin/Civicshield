@@ -4,14 +4,24 @@ import { api } from '../api';
 import { Badge, Err, Loading, Page, download } from '../components/ui';
 
 const OUTCOMES = ['ALL', 'PASS', 'FAIL', 'UNKNOWN'] as const;
-const SEVERITIES = ['ALL', 'critical', 'high', 'medium', 'low'] as const;
+const SEVERITIES = ['ALL', 'critical', 'high', 'medium', 'low', 'info'] as const;
 const SOURCES = ['ALL', 'configuration', 'vulnerability'] as const;
 const AREA_LABEL: Record<string, string> = {
   ASSET: 'Asset hygiene', ID: 'Identity & access', ENDP: 'Endpoint protection',
   BKP: 'Backup & recovery', VULN: 'Known vulnerabilities',
+  SPF: 'Single points of failure', EXP: 'External exposure', SEG: 'Zone hygiene',
+  MON: 'Monitoring coverage', CYC: 'Dependency cycles', CUSTOM: 'Custom rules',
+  OTHER: 'Other',
 };
-const areaOf = (ruleId: string) =>
-  String(ruleId).startsWith('CVE-') ? 'VULN' : (String(ruleId).split('-')[1] ?? 'OTHER');
+// CVE-* -> VULN, DR-* (operator drafts) -> CUSTOM, AR-XXX-NN -> the XXX
+// token (SPF/EXP/SEG/MON/BKP/CYC), BG-XXX-* -> the XXX token.
+const areaOf = (ruleId: string) => {
+  const id = String(ruleId);
+  if (id.startsWith('CVE-')) return 'VULN';
+  if (id.startsWith('DR-')) return 'CUSTOM';
+  return id.split('-')[1] ?? 'OTHER';
+};
+const scopeOf = (r: any) => r?.scope ?? 'all';
 const sourceOf = (r: any) =>
   r.source ?? (String(r.rule_id).startsWith('CVE-') ? 'vulnerability' : 'configuration');
 
@@ -38,12 +48,20 @@ export default function Assessments() {
   const [posture, setPosture] = useState<any>(null);
   const [online, setOnline] = useState(false);
   const [summary, setSummary] = useState<any>(null);
+  const [prevLabel, setPrevLabel] = useState<string | null>(null);
+
+  // Prefer the latest full-estate run: a per-asset run is a drill-down,
+  // not the posture summary the KPIs describe.
+  const preferFullScope = (list: any[]) => {
+    const full = [...list].reverse().find((r) => scopeOf(r) === 'all');
+    return full?.id ?? (list.length ? list[list.length - 1].id : null);
+  };
 
   const loadRuns = async (pick?: number) => {
     const d: any = await api.get('/api/assessments');
     const list = d.items ?? d ?? [];
     setRuns(list);
-    setSelected((cur) => pick ?? cur ?? (list.length ? list[list.length - 1].id : null));
+    setSelected((cur) => pick ?? cur ?? preferFullScope(list));
   };
 
   useEffect(() => {
@@ -60,18 +78,26 @@ export default function Assessments() {
     let live = true;
     setLoadingResults(true);
     setErr('');
-    const idx = runs.findIndex((r) => r.id === selected);
-    const prev = idx > 0 ? runs[idx - 1] : null;
+    const cur = runs.find((r) => r.id === selected);
+    // Deltas are only meaningful against the previous run of the same
+    // scope and rule set: a per-asset drill-down is not comparable to a
+    // full-estate run, and architecture runs use different rule versions.
+    const prev = [...runs]
+      .filter((r) => r.id < selected && scopeOf(r) === scopeOf(cur)
+        && String(r.rule_version ?? '') === String(cur?.rule_version ?? ''))
+      .sort((a, b) => a.id - b.id)
+      .pop() ?? null;
     Promise.all([
       api.get(`/api/assessments/${selected}`),
       prev ? api.get(`/api/assessments/${prev.id}`) : Promise.resolve([]),
-    ]).then(([cur, old]) => {
+    ]).then(([curRes, old]) => {
       if (!live) return;
-      setResults(cur.items ?? cur ?? []);
+      setResults(curRes.items ?? curRes ?? []);
       const o: any[] = old.items ?? old ?? [];
       const counts: Record<string, number> = {};
       o.forEach((r) => { counts[String(r.outcome)] = (counts[String(r.outcome)] ?? 0) + 1; });
       setPrevCounts(prev ? counts : null);
+      setPrevLabel(prev ? `run #${prev.id}` : (runs.some((r) => r.id < selected) ? 'different scope — not comparable' : null));
     }).catch((e) => { if (live) setErr(String(e?.message ?? e)); })
       .finally(() => { if (live) setLoadingResults(false); });
     return () => { live = false; };
@@ -90,7 +116,7 @@ export default function Assessments() {
       const list = d.items ?? d ?? [];
       setRuns(list);
       const newest = list[list.length - 1];
-      if (newest) setSelected(newest.id);
+      if (newest) setSelected(preferFullScope(list));
       api.get('/api/detection/posture').then(setPosture).catch(() => null);
       if (!result?.run_id) setErr('Detection completed but no run was recorded.');
     } catch (e: any) {
@@ -112,7 +138,9 @@ export default function Assessments() {
   }, [results]);
 
   const areas = useMemo(() => [...new Set(results.map((r) => areaOf(r.rule_id)))].sort(), [results]);
-  const cveRows = useMemo(() => results.filter((r) => sourceOf(r) === 'vulnerability'), [results]);
+  // Only FAILed version matches are vulnerabilities; PASS/UNKNOWN rows are
+  // not findings and must not inflate the count.
+  const cveRows = useMemo(() => results.filter((r) => sourceOf(r) === 'vulnerability' && r.outcome === 'FAIL'), [results]);
   const cveCritical = cveRows.filter((r) => r.outcome === 'FAIL' && String(r.severity) === 'critical').length;
   const configFailed = results.filter((r) => r.outcome === 'FAIL' && sourceOf(r) === 'configuration').length;
 
@@ -160,13 +188,17 @@ export default function Assessments() {
             <div className="kpi">
               <div className="kpi-label">Selected run</div>
               <div className="kpi-value">{current ? `#${current.id}` : '—'}</div>
-              <div className="text-[10px] text-slate-500">{current ? when(current.started_at) : 'no runs'}</div>
+              <div className="text-[10px] text-slate-500">
+                {current ? `${when(current.started_at)} · ${scopeOf(current)} scope` : 'no runs'}
+              </div>
             </div>
             <div className="kpi">
               <div className="kpi-label">Failed controls</div>
               <div className="kpi-value" style={{ color: configFailed ? '#F87171' : '#34D399' }}>{configFailed}</div>
               <div className="text-[10px] text-slate-500">
-                {counts.FAIL} total incl. CVEs · {delta('FAIL') == null ? 'no prior run' : `${delta('FAIL')! >= 0 ? '+' : ''}${delta('FAIL')} vs previous`}
+                {counts.FAIL} total incl. CVEs · {prevCounts && delta('FAIL') != null
+                  ? `${delta('FAIL')! >= 0 ? '+' : ''}${delta('FAIL')} vs ${prevLabel ?? 'previous'}`
+                  : (prevLabel ?? 'no prior run')}
               </div>
             </div>
             <div className="kpi">
@@ -257,7 +289,7 @@ export default function Assessments() {
                 <h2 className="text-[13px]">Run history</h2>
                 <span className="ml-auto font-mono text-[10px] text-slate-500">{runs.length}</span>
               </div>
-              <ul className="grid gap-1">
+              <ul className="grid gap-1 max-h-[26rem] overflow-y-auto pr-0.5">
                 {[...runs].reverse().map((r) => {
                   const active = r.id === selected;
                   return (
