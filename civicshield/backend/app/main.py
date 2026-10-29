@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 from app.database import Base, SessionLocal, engine, get_db
 from app.models.models import (
     AITask,
+    ArchImportBatch,
+    ArchProposal,
     AssessmentResult,
     AssessmentRun,
     Asset,
@@ -33,7 +35,10 @@ from app.models.models import (
     ThreatIndicator,
 )
 from app.schemas.schemas import AssetOut, RelationshipOut, ServiceOut
-from app import detection, review, vuln_intel
+from app import detection, governance, protector, review, vuln_intel
+from app.detection_rules import router as detection_rules_router
+from app.governance_router import router as governance_router
+from app.protector_router import router as protector_router
 
 # Hoisted engine imports (Optimization: previously re-resolved per request,
 # growing sys.path unboundedly on every assessment/recovery call).
@@ -66,6 +71,22 @@ def _ensure_columns():
         rcols = {r[1] for r in conn.execute("PRAGMA table_info(assessment_runs)").fetchall()}
         if rcols and "scope" not in rcols:
             conn.execute("ALTER TABLE assessment_runs ADD COLUMN scope TEXT DEFAULT 'all'")
+        relcols = {r[1] for r in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+        for name, ddl in (("provenance", "TEXT DEFAULT 'manual'"),
+                          ("evidence_ref", "TEXT DEFAULT ''"),
+                          ("created_at", "REAL DEFAULT 0"),
+                          ("updated_at", "REAL DEFAULT 0")):
+            if relcols and name not in relcols:
+                conn.execute(f"ALTER TABLE relationships ADD COLUMN {name} {ddl}")
+        # Phase 6: audit hash-chain columns on existing demo DBs.
+        try:
+            acols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+            for name, ddl in (("prev_hash", "TEXT DEFAULT ''"),
+                              ("entry_hash", "TEXT DEFAULT ''")):
+                if acols and name not in acols:
+                    conn.execute(f"ALTER TABLE audit_events ADD COLUMN {name} {ddl}")
+        except Exception:
+            pass
         conn.commit()
 
 try:
@@ -73,7 +94,37 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="CivicShield")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Startup: versioned migrations, audit chain, WAL, protector threads."""
+    try:
+        from app import migrations as _mig
+        _mig.migrate()
+    except Exception:
+        pass
+    try:
+        db = SessionLocal()
+        try:
+            governance.backfill_audit_chain(db)
+        finally:
+            db.close()
+    except Exception:
+        pass
+    try:
+        protector.enable_wal()
+    except Exception:
+        pass
+    try:
+        protector.ensure_started()
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="CivicShield", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -86,6 +137,10 @@ try:
     app.include_router(fixpilot_router)
 except Exception:
     pass
+
+app.include_router(detection_rules_router)
+app.include_router(protector_router)
+app.include_router(governance_router)
 
 
 def role_of(authorization: str | None = None, x_role: str | None = None) -> str:
@@ -117,6 +172,17 @@ def api_me(authorization: str | None = Header(default=None),
 def audit(db: Session, actor: str, action: str, detail: str = ""):
     db.add(AuditEvent(actor=actor, action=action, detail=detail[:2000]))
     db.commit()
+
+
+def _finding_source(rule_id: str) -> str:
+    rid = str(rule_id or "")
+    if rid.startswith("CVE-"):
+        return "vulnerability"
+    if rid.startswith("AR-"):
+        return "architecture"
+    if rid.startswith("DR-"):
+        return "custom"
+    return "configuration"
 
 
 @app.get("/health")
@@ -195,6 +261,7 @@ def api_asset_create(body: AssetIn, db: Session = Depends(get_db),
     db.commit()
     db.refresh(r)
     audit(db, role_of(authorization, x_role), "asset_created", f"id={r.id}")
+    protector.notify_event("asset", f"asset {r.id} created")
     return {"id": r.id}
 
 
@@ -219,6 +286,7 @@ def api_asset_patch(asset_id: int, body: dict, db: Session = Depends(get_db),
     r.updated_at = time.time()
     db.commit()
     audit(db, role_of(authorization, x_role), "asset_updated", f"id={asset_id}")
+    protector.notify_event("asset", f"asset {asset_id} updated")
     return {"id": asset_id}
 
 
@@ -232,6 +300,7 @@ def api_asset_delete(asset_id: int, db: Session = Depends(get_db),
     r.retired = 1
     db.commit()
     audit(db, "admin", "asset_retired", f"id={asset_id}")
+    protector.notify_event("asset", f"asset {asset_id} retired")
     return {"id": asset_id, "retired": True}
 
 
@@ -245,7 +314,9 @@ def api_services(db: Session = Depends(get_db)):
 def api_relationships(db: Session = Depends(get_db)):
     rows = db.query(AssetRelationship).order_by(AssetRelationship.id).all()
     return [RelationshipOut(id=r.id, source_type=r.source_type, source_id=r.source_id,
-                            target_type=r.target_type, target_id=r.target_id, rel=r.rel) for r in rows]
+                            target_type=r.target_type, target_id=r.target_id, rel=r.rel,
+                            provenance=getattr(r, "provenance", None) or "manual",
+                            evidence_ref=getattr(r, "evidence_ref", None) or "") for r in rows]
 
 
 class RelationshipIn(BaseModel):
@@ -273,11 +344,15 @@ def api_relationship_create(body: RelationshipIn, db: Session = Depends(get_db),
             AssetRelationship.target_type == body.target_type, AssetRelationship.target_id == body.target_id,
             AssetRelationship.rel == body.rel).first():
         raise HTTPException(409, "relationship already exists")
+    if (body.source_type == "asset" and body.target_type == "asset"
+            and body.source_id == body.target_id):
+        raise HTTPException(422, "an asset cannot relate to itself")
     r = AssetRelationship(**body.model_dump(), source_note="verified", confidence="high")
     db.add(r)
     db.commit()
     db.refresh(r)
     audit(db, role_of(authorization, x_role), "relationship_created", f"id={r.id}")
+    protector.notify_event("topology", f"relationship {r.id} created")
     return {"id": r.id}
 
 
@@ -291,6 +366,7 @@ def api_relationship_delete(rid: int, db: Session = Depends(get_db),
     db.delete(r)
     db.commit()
     audit(db, role_of(authorization, x_role), "relationship_deleted", f"id={rid}")
+    protector.notify_event("topology", f"relationship {rid} deleted")
     return {"id": rid, "deleted": True}
 
 
@@ -524,6 +600,7 @@ def api_asset_evidence_push(asset_id: int, body: EvidenceIn, db: Session = Depen
     audit(db, role, "evidence_collected",
           f"asset={asset.id} source={evidence['collector']['source']} bytes={size} "
           f"software={len(vuln_intel.normalize_software(evidence))}")
+    protector.notify_event("evidence", f"asset {asset.id} evidence collected")
     out = {"asset_id": asset.id, "collected_at": evidence["collector"]["collected_at"],
            "bytes": size, "accepted_keys": sorted(evidence.keys()),
            "software_count": len(vuln_intel.normalize_software(evidence))}
@@ -544,7 +621,7 @@ def api_assessment_one(run_id: int, db: Session = Depends(get_db)):
     rows = db.query(AssessmentResult).filter(AssessmentResult.run_id == run_id).all()
     return [{"rule_id": r.rule_id, "asset_id": r.asset_id, "outcome": r.outcome,
              "severity": r.severity, "evidence_ref": r.evidence_ref,
-             "source": ("vulnerability" if str(r.rule_id).startswith("CVE-") else "configuration")}
+             "source": _finding_source(str(r.rule_id))}
             for r in rows]
 
 
@@ -558,7 +635,7 @@ def api_findings(db: Session = Depends(get_db)):
         out.append({"id": f.id, "rule_id": f.rule_id, "asset_id": f.asset_id, "severity": f.severity,
                     "status": f.status, "detail": f.detail, "workflow": f.workflow or "open",
                     "assignee": f.assignee or "",
-                    "source": ("vulnerability" if str(f.rule_id).startswith("CVE-") else "configuration"),
+                    "source": _finding_source(str(f.rule_id)),
                     "score": (rk.score if rk else 0), "priority": (rk.priority if rk else "Informational")})
     return out
 
@@ -931,7 +1008,10 @@ def api_incident_unlink(iid: int, fid: int, db: Session = Depends(get_db),
 def api_incident_summary(iid: int, db: Session = Depends(get_db)):
     """AI-assisted incident summary grounded in recorded events and linked findings."""
     detail = api_incident_detail(iid, db)
-    facts = [f"{f['rule_id']} on asset {f['asset_id']} ({f['severity']})" for f in detail["findings"]]
+    _inames = {str(a.id): (a.hostname or a.name or f"#{a.id}")
+               for a in db.query(Asset).filter(Asset.retired == 0).all()}
+    facts = [f"{f['rule_id']} on {_inames.get(str(f['asset_id']), '#' + str(f['asset_id']))} "
+             f"({f['severity']})" for f in detail["findings"]]
     observed = [e["detail"] for e in detail["events"] if e["kind"] in ("observed", "evidence")]
     gaps = [] if detail.get("commander") else ["No commander assigned"]
     if any("BG-ID" in f["rule_id"] for f in detail["findings"]):
@@ -1420,6 +1500,17 @@ def _assist_resolve_asset(db: Session, ref: str):
     return None, partial
 
 
+def _assist_asset_label(db: Session, aid) -> str:
+    """Human reference for an asset id: hostname first, then name, then #id."""
+    try:
+        a = db.query(Asset).filter(Asset.id == int(str(aid))).first()
+    except (TypeError, ValueError):
+        return f"#{aid}"
+    if not a:
+        return f"#{aid}"
+    return a.hostname or a.name or f"#{aid}"
+
+
 def _assist_open_findings(db: Session):
     return (db.query(Finding)
             .filter(~Finding.workflow.in_(("resolved", "false_positive")))
@@ -1457,10 +1548,33 @@ def _tool_search_assets(db: Session, args: dict) -> dict:
     assets = db.query(Asset).filter(Asset.retired == 0).all()
     hits = [a for a in assets if q in (a.name or "").lower()
             or q in (a.hostname or "").lower() or q in (a.kind or "").lower()
-            or q in (a.zone or "").lower()][:20]
+            or q in (a.zone or "").lower()
+            or q in (a.os_name or "").lower()][:20]
     return {"matches": [{"id": a.id, "name": a.name, "hostname": a.hostname,
                          "kind": a.kind, "status": a.status,
-                         "criticality": a.criticality} for a in hits]}
+                         "criticality": a.criticality,
+                         "os_name": a.os_name or ""} for a in hits]}
+
+
+def _assist_os_status(asset, ev: dict) -> dict:
+    """Deterministic OS/patch posture from inventory evidence. No guessing."""
+    from datetime import datetime, timezone
+    os_ev = (ev.get("os") or {}) if isinstance(ev, dict) else {}
+    os_name = str(asset.os_name or os_ev.get("name") or "").strip() or "unknown"
+    supported = os_ev.get("supported")  # True|False|None(unknown)
+    patch = (ev.get("patch") or {}) if isinstance(ev, dict) else {}
+    overdue_days = None
+    try:
+        last = str(patch.get("last_applied") or "")
+        max_age = int(patch.get("max_age_days") or 0)
+        if last and max_age > 0:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - dt).days
+            overdue_days = max(0, age - max_age)
+    except (ValueError, TypeError):
+        overdue_days = None
+    return {"os_name": os_name, "supported": supported,
+            "patch_overdue_days": overdue_days}
 
 
 def _tool_asset_details(db: Session, args: dict) -> dict:
@@ -1474,10 +1588,19 @@ def _tool_asset_details(db: Session, args: dict) -> dict:
     rels = (db.query(AssetRelationship)
             .filter((AssetRelationship.source_id == str(asset.id))
                     | (AssetRelationship.target_id == str(asset.id))).all())
+    os_status = _assist_os_status(asset, ev if isinstance(ev, dict) else {})
+    ep = (ev.get("endpoint") or {}) if isinstance(ev, dict) else {}
+    bk = (ev.get("backup") or {}) if isinstance(ev, dict) else {}
     return {"asset": {"id": asset.id, "name": asset.name, "hostname": asset.hostname,
                       "kind": asset.kind, "zone": asset.zone, "status": asset.status,
                       "owner": asset.owner, "criticality": asset.criticality,
                       "os": (ev.get("os") or {}) if isinstance(ev, dict) else {}},
+            "os_status": os_status,
+            "endpoint": {"edr": ep.get("edr_installed"),
+                         "monitoring_coverage": ep.get("monitoring_coverage")},
+            "backup": {"required": bool(bk.get("backups_required")),
+                       "target": bk.get("backup_target") or "",
+                       "immutable": bool(bk.get("immutable_backup"))},
             "open_findings": [{"id": f.id, "rule_id": f.rule_id, "severity": f.severity,
                                "detail": (f.detail or "")[:300]} for f in findings
                               if f.workflow not in ("resolved", "false_positive")][:10],
@@ -1722,7 +1845,14 @@ def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
         lines.append("Write (I always ask first, then you approve in chat):")
         for tid, spec in _ASSIST_WRITE_TOOLS.items():
             lines.append(f"- {tid} (level {spec['level']}): {spec['description']}")
-        lines += ["", "Try: 'overview', 'asset app01', 'critical findings', "
+        lines += ["", "I can also explain attack paths ('explain attack paths', "
+                  "'attack path from asset #12 to asset #5'), change proposals "
+                  "('list proposals', 'explain proposal #3'), outdated operating "
+                  "systems ('which devices run outdated OS?'), CVE context with "
+                  "live NVD/CISA lookup ('tell me about CVE-2024-1234'), and "
+                  "recommend defensive tooling, open-source or paid "
+                  "('recommend tools to reduce exposure').",
+                  "", "Try: 'overview', 'asset app01', 'critical findings', "
                   "'run assessment', or 'create incident titled X'."]
         return {"kind": "answer", "answer": "\n".join(lines), "refs": {}}
 
@@ -1786,6 +1916,271 @@ def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
                          "summary": f"Assign {m.group(1)} to {m.group(2).strip()}",
                          "impact": _ASSIST_WRITE_TOOLS["assign_task"]["impact"]}}
 
+    if re.search(r"attack[ -]?paths?", low):
+        from app import attack_paths as _ap
+        m_from = re.search(r"from\s+asset\s*#?(\d+)", low)
+        m_to = re.search(r"(?:to|toward|towards|->|→)\s+asset\s*#?(\d+)", low)
+        entry = int(m_from.group(1)) if m_from else None
+        target = int(m_to.group(1)) if m_to else None
+        if entry is None and target is None:
+            bare = re.findall(r"asset\s*#?(\d+)", low)
+            if len(bare) >= 2:
+                entry, target = int(bare[0]), int(bare[1])
+            elif len(bare) == 1:
+                target = int(bare[0])
+        try:
+            ana = _ap.analyze(db, entry_asset_id=entry, target_asset_id=target,
+                               max_depth=5, max_paths=3)
+        except (KeyError, ValueError):
+            return {"kind": "answer",
+                    "answer": "I can't analyze that: one of the assets does not "
+                              "exist. Check the asset ids on the map and try again.",
+                    "refs": {}}
+        if not ana["paths"]:
+            scope = ""
+            if entry is not None or target is not None:
+                scope = " between those points"
+            return {"kind": "answer",
+                    "answer": f"No attack paths found{scope}. Either the segment "
+                              "is isolated or the inventory is missing the links.",
+                    "refs": {}}
+        lines = [f"Attack-path analysis (v{ana['analysis_version']}): "
+                 f"{len(ana['entries'])} entr{'y' if len(ana['entries']) == 1 else 'ies'}, "
+                 f"{len(ana['targets'])} high-value targets, top {len(ana['paths'])} shown."]
+        for e in ana["entries"][:8]:
+            lines.append(f"Entry asset #{e['id']}: {e['name']} (zone {e.get('zone', '')}).")
+        for t in ana["targets"][:12]:
+            lines.append(f"Target asset #{t['id']}: {t['name']} "
+                         f"({t.get('criticality', '')} criticality).")
+        node_ids: set = set()
+        for p in ana["paths"]:
+            node_ids.update([p["entry_id"], p["target_id"]] +
+                            [h["to_id"] for h in p["hops"]])
+            lines.append(f"#{p['rank']} (score {p['rank_score']}): {p['entry_name']} → "
+                         f"{p['target_name']} — {p['length']} hop(s), "
+                         f"{p['boundary_crossings']} zone crossing(s), "
+                         f"{p['assumed_hops']} assumed hop(s).")
+            for h in p["hops"]:
+                flag = "ASSUMED" if h["assumed"] else h["connectivity"]
+                lines.append(f"  {h['from_name']} —{h['rel']}→ {h['to_name']} "
+                             f"[{flag}, rel #{h['relationship_id']}]: {h['note']}")
+            if p["open_findings_count"]:
+                rules = sorted({f["rule_id"] for f in p["open_findings"]})
+                lines.append(f"  Open findings on path ({p['open_findings_count']}): "
+                             + ", ".join(rules[:6]))
+            if p["blast_radius"].get("services"):
+                lines.append("  Services in blast radius: " +
+                             ", ".join(s["name"] for s in p["blast_radius"]["services"]))
+        lines.append("Assumed hops are plausible movement, not confirmed exploits — "
+                     "validate them against network evidence.")
+        _tlabel = None
+        if target is not None:
+            for t in ana["targets"]:
+                if t["id"] == target:
+                    _tlabel = t.get("hostname") or t["name"]
+        refs = {"entry_asset_id": entry, "target_asset_id": target,
+                "target_label": _tlabel,
+                "asset_ids": sorted(node_ids)}
+        refs = {k: v for k, v in refs.items() if v is not None}
+        return {"kind": "answer", "answer": "\n".join(lines)[:4000], "refs": refs}
+
+    m_prop = re.search(r"proposal\s*#?(\d+)", low)
+    if m_prop or re.search(r"\bproposals?\b|\bsimulat", low):
+        from app.proposals import service as _props
+        if not m_prop:
+            items = db.query(ArchProposal).order_by(ArchProposal.id.desc()).limit(5).all()
+            if not items:
+                return {"kind": "answer",
+                        "answer": "No change proposals staged yet. Create one on the "
+                                "Proposals page: stage edits, simulate, verify, approve.",
+                        "refs": {}}
+            lines = ["Most recent proposals:"]
+            for it in items:
+                lines.append(f"- #{it.id} {it.title} [{it.status}]")
+            return {"kind": "answer", "answer": "\n".join(lines),
+                    "refs": {"proposal_id": items[0].id}}
+        pid = int(m_prop.group(1))
+        try:
+            det = _props._proposal_out(_props._get(db, pid), db)
+        except KeyError:
+            return {"kind": "answer",
+                    "answer": f"Proposal #{pid} does not exist.", "refs": {}}
+        lines = [f"Proposal #{det['id']}: {det['title']} [{det['status']}]"]
+        if det["rationale"]:
+            lines.append(f"Rationale: {det['rationale'][:300]}")
+        names = {str(a.id): (a.name or a.hostname or f"asset {a.id}")
+                 for a in db.query(Asset).all()}
+        if det["changes"]:
+            lines.append(f"Staged edits ({len(det['changes'])}):")
+            for c in det["changes"][:6]:
+                pay = dict(c["payload"]) if isinstance(c.get("payload"), dict) else {}
+                for k in ("source_id", "target_id", "asset_id"):
+                    if str(pay.get(k, "")).isdigit():
+                        pay[k] = f"{pay[k]} ({names.get(str(pay[k]), '?')})"
+                lines.append(f"- {c['op']}: {json.dumps(pay)[:200]}")
+        else:
+            lines.append("No edits staged yet.")
+        if det["sim_runs"]:
+            last = det["sim_runs"][-1]["result"]
+            lines.append(f"Last simulation: {last.get('baseline', {}).get('hits', '?')} hits → "
+                         f"{last.get('simulated', {}).get('hits', '?')} hits; "
+                         f"{last.get('paths_removed', 0)} paths removed, "
+                         f"{last.get('paths_added', 0)} added.")
+            for v in last.get("verification", [])[:4]:
+                lines.append(f"  {'PASS' if v.get('passed') else 'FAIL'} "
+                             f"{v.get('criterion')}: {v.get('note', '')[:140]}")
+            lines.append("Simulation result — not proof the change works in production.")
+        else:
+            lines.append("Not simulated yet.")
+        nxt = {"draft": "Next: stage edits, then run a simulation.",
+               "simulated": "Next: review the diff, then approve or reject.",
+               "approved": "Next: apply it to live records when ready.",
+               "applied": "Already applied to live records.",
+               "rejected": "Rejected; no further action."}.get(det["status"], "")
+        if nxt:
+            lines.append(nxt)
+        return {"kind": "answer", "answer": "\n".join(lines)[:4000],
+                "refs": {"proposal_id": det["id"]}}
+
+    m_cve = re.search(r"cve-\d{4}-\d{4,}", low)
+    if m_cve:
+        from app import web_context as _wc
+        cve_id = m_cve.group(0).upper()
+        local = [f for f in _assist_open_findings(db)
+                 if str(f.rule_id).upper() == cve_id]
+        names = {str(a.id): (a.name or a.hostname or f"asset {a.id}")
+                 for a in db.query(Asset).all()}
+        lines = [f"{cve_id}: {len(local)} open finding(s) in this estate."]
+        for f in local[:6]:
+            lines.append(f"- #{f.id} [{f.severity}] on "
+                         f"{names.get(str(f.asset_id), 'asset ' + str(f.asset_id))}")
+        ctx = _wc.cve_context(cve_id)
+        nvd, kev = ctx.get("nvd", {}), ctx.get("kev", {})
+        if nvd.get("description"):
+            when = str(nvd.get("retrieved_at") or "")
+            lines.append(f"NVD ({nvd.get('source')}, retrieved {when[:10]}): "
+                         f"{nvd['description'][:400]}")
+            if nvd.get("cvss"):
+                lines.append(f"NVD CVSS: {nvd['cvss']}.")
+        else:
+            lines.append(f"Live NVD lookup unavailable ({nvd.get('error', 'offline')}); "
+                         f"using local records only.")
+        if kev.get("known_exploited"):
+            lines.append(f"CISA KEV: KNOWN EXPLOITED — {kev.get('vuln_name', '')} "
+                         f"({kev.get('product', '')}), federal due {kev.get('due_date', '?')}. "
+                         f"Patch immediately.")
+        elif "error" not in kev:
+            lines.append("CISA KEV: not listed as known-exploited.")
+        if local:
+            lines.append("Recommended tooling posture (evaluate before buying): "
+                         "vulnerability scanner (OpenVAS / Tenable Nessus) plus "
+                         "EDR on the affected assets (Wazuh / CrowdStrike Falcon).")
+        return {"kind": "answer", "answer": "\n".join(lines)[:4000],
+                "refs": {"cve_id": cve_id}}
+
+    if re.search(r"outdated|end.?of.?life|\beol\b|unsupported (os|operating)|"
+                 r"old operating|unpatched os|retired os|ancient os", low):
+        rows = []
+        for a in db.query(Asset).filter(Asset.retired == 0).all():
+            ev = detection._evidence(a)
+            st = _assist_os_status(a, ev if isinstance(ev, dict) else {})
+            if st["supported"] is False or st["patch_overdue_days"]:
+                rows.append((a, st))
+        if not rows:
+            return {"kind": "answer",
+                    "answer": "No outdated operating systems recorded: every inventoried "
+                              "OS reports vendor support with no overdue patches. (Absence of "
+                              "evidence is not proof — unrecorded devices are not covered.)",
+                    "refs": {}}
+        unsupported = [(a, s) for a, s in rows if s["supported"] is False]
+        overdue = [(a, s) for a, s in rows if (s["patch_overdue_days"] or 0) > 0]
+        lines = []
+        if unsupported:
+            lines.append(f"Outdated OS, no vendor fixes ({len(unsupported)}):")
+            for a, s in unsupported[:8]:
+                lines.append(f"- {a.name or a.hostname} (#{a.id}): {s['os_name']} "
+                             f"[{a.criticality}]")
+        if overdue:
+            lines.append(f"Patching overdue ({len(overdue)}):")
+            for a, s in overdue[:8]:
+                lines.append(f"- {a.name or a.hostname} (#{a.id}): "
+                             f"{s['patch_overdue_days']} days past policy")
+        lines.append("Verify end-of-life dates with the vendor, then migrate, isolate, "
+                     "or accept the risk in writing — in that order.")
+        return {"kind": "answer", "answer": "\n".join(lines)[:4000],
+                "refs": {"asset_ids": [a.id for a, _ in rows[:8]],
+                         "outdated_os": True}}
+
+    if re.search(r"\btools?\b|recommend|prox(?:y|ies)|\bdlp\b|\bsiem\b|\bedr\b|"
+                 r"\bwaf\b|open.?source|\bpaid\b|\bproducts?\b", low) \
+            and not re.search(r"you (have|offer|support)|capabilit", low):
+        from app import tool_catalog as _tc3
+        _wanted = [("external_exposure", r"prox(?:y|ies)|\bwaf\b|reverse|filter|exposure"),
+                   ("data_exfiltration", r"\bdlp\b|exfiltrat|egress|data.?loss"),
+                   ("low_monitoring", r"\bsiem\b|logging|log.management"),
+                   ("missing_edr", r"\bedr\b|endpoint"),
+                   ("network_ids", r"firewall|\bnids\b|\bids\b|\bips\b|intrusion|suricata|snort"),
+                   ("no_backup", r"backup|restore|ransomware"),
+                   ("mutable_backup", r"immutable"),
+                   ("missing_mfa", r"\bmfa\b|2fa|multifactor|single.sign|\bsso\b"),
+                   ("shared_admin", r"\bpam\b|password.vault|privileged.access"),
+                   ("remote_admin", r"jump|bastion|remote.access|\bvpn\b|zero.trust|\bztna\b"),
+                   ("unnecessary_services", r"scanner|nessus|openvas|qualys|pentest|vuln"),
+                   ("unsupported_os", r"\bpatch\b|\bwsus\b|lifecycle|\beol\b")]
+        requested = [gap for gap, pat in _wanted if re.search(pat, low)]
+        assets = db.query(Asset).filter(Asset.retired == 0).all()
+        gap_counts: dict[str, int] = {}
+        for a in assets:
+            ev = detection._evidence(a)
+            sup = ((ev.get("os") or {}).get("supported")
+                   if isinstance(ev, dict) else None)
+            for g in _tc3.gaps_for_evidence(ev if isinstance(ev, dict) else {},
+                                            sup, zone=a.zone, kind=a.kind):
+                gap_counts[g] = gap_counts.get(g, 0) + 1
+        top = sorted(gap_counts, key=lambda g: -gap_counts[g])[:4]
+        ordered = list(dict.fromkeys(requested + top))[:5]
+        if not ordered:
+            return {"kind": "answer",
+                    "answer": "No tooling gaps detected in the recorded evidence: EDR, "
+                              "monitoring, backups, MFA and exposure all look covered. "
+                              "Tell me which capability you want to strengthen anyway.",
+                    "refs": {}}
+        lines = [f"Tooling to evaluate — open-source and paid "
+                 f"({len(assets)} assets assessed):"]
+        for r in _tc3.recommend(ordered, limit=5):
+            scope = ("you asked about" if r["gap"] in requested
+                     else f"{gap_counts.get(r['gap'], 0)} estate asset(s)")
+            lines.append(f"- {r['category']} [{scope}]: {r['why'][:160]}")
+            lines.append(f"  Open-source: {', '.join(r['open_source'][:3])}.")
+            lines.append(f"  Commercial: {', '.join(r['commercial'][:3])}. {r['note']}")
+        return {"kind": "answer", "answer": "\n".join(lines)[:4000],
+                "refs": {"gaps": ordered}}
+
+    mid_f = re.search(r"finding\s*#?(\d+)", low)
+    if mid_f and not re.search(r"\basset\b", low):
+        f = db.query(Finding).filter(Finding.id == int(mid_f.group(1))).first()
+        if not f:
+            return {"kind": "answer",
+                    "answer": f"Finding #{mid_f.group(1)} does not exist.", "refs": {}}
+        alabel = _assist_asset_label(db, f.asset_id)
+        return {"kind": "answer",
+                "answer": f"Finding #{f.id}: {f.rule_id} [{f.severity}] on {alabel}, "
+                          f"workflow {f.workflow}. Detail: {(f.detail or '')[:400]}",
+                "refs": {"finding_id": f.id, "asset_id": f.asset_id,
+                         "asset_label": alabel}}
+    mid_i = re.search(r"incident\s*#?(\d+)", low)
+    if mid_i and not re.search(r"\basset\b", low):
+        try:
+            d = _tool_incident_details(db, {"id": mid_i.group(1)})
+        except ValueError:
+            return {"kind": "answer",
+                    "answer": f"Incident #{mid_i.group(1)} does not exist.", "refs": {}}
+        i = d["incident"]
+        return {"kind": "answer",
+                "answer": f"Incident #{i['id']}: {i['title']} [{i['severity']}, {i['status']}], "
+                          f"commander: {i['commander'] or 'unassigned'}. "
+                          f"{d['events']} recorded events.",
+                "refs": {"incident_id": i["id"]}}
     m = re.search(r"\basset\s+#?([A-Za-z0-9_.\-]+)", low)
     if not m or m.group(1).lower() in ("health", "status", "list", "all", "details"):
         m = re.search(r"(?:host|server|machine|investigate|tell me about|details?(?: of| for| on)?)\s+([A-Za-z0-9_.\-]+)", low)
@@ -1816,15 +2211,42 @@ def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
         lines = [f"{a['name']} ({a['hostname'] or 'no hostname'}) — {a['kind']}, "
                  f"zone {a['zone']}, status {a['status']}, criticality {a['criticality']}.",
                  f"Owner: {a['owner'] or 'unassigned'}. Relationships: {d['relationships']}."]
+        os_st = d.get("os_status", {})
+        sup = os_st.get("supported")
+        os_line = f"OS: {os_st.get('os_name', 'unknown')} — vendor support: " + \
+            ("yes" if sup is True else "NO (outdated — no security fixes)" if sup is False
+             else "unknown (not recorded)")
+        od = os_st.get("patch_overdue_days")
+        if od is not None:
+            os_line += f"; patching {'current' if od == 0 else f'{od} days overdue'}"
+        lines.append(os_line + ".")
+        ep, bk = d.get("endpoint", {}), d.get("backup", {})
+        lines.append(f"Endpoint: EDR {'installed' if ep.get('edr') else 'NOT installed'}, "
+                     f"monitoring coverage {ep.get('monitoring_coverage', '?')}. "
+                     f"Backup: " + ("not required" if not bk.get("required")
+                                    else f"target {bk.get('target') or 'missing'}, "
+                                         f"{'immutable' if bk.get('immutable') else 'MUTABLE'}") + ".")
         if d["open_findings"]:
             lines.append(f"Open findings ({len(d['open_findings'])}):")
             for f in d["open_findings"][:6]:
                 lines.append(f"- #{f['id']} {f['rule_id']} [{f['severity']}] {f['detail'][:140]}")
         else:
             lines.append("No open findings recorded for this asset.")
+        from app import tool_catalog as _tc
+        ev = detection._evidence(asset) if isinstance(detection._evidence(asset), dict) else {}
+        gaps = _tc.gaps_for_evidence(ev, sup, zone=a["zone"], kind=a["kind"])
+        recs = _tc.recommend(gaps, limit=2)
+        if recs:
+            lines.append("Recommended tooling for its gaps (evaluate before buying):")
+            for r in recs:
+                lines.append(f"- {r['category']}: open-source: {', '.join(r['open_source'][:2])}; "
+                             f"commercial: {', '.join(r['commercial'][:2])}. {r['note']}")
         _assist_remember_asset(db, conv, asset.id)
-        return {"kind": "answer", "answer": "\n".join(lines),
-                "refs": {"asset_id": asset.id}}
+        refs = {"asset_id": asset.id,
+                "asset_label": asset.hostname or asset.name or f"#{asset.id}"}
+        if sup is False:
+            refs["outdated_os"] = True
+        return {"kind": "answer", "answer": "\n".join(lines), "refs": refs}
 
     if re.search(r"attention|unhealthy|offline|degraded|at.?risk|\bdown\b|needs?", low):
         assets = db.query(Asset).filter(Asset.retired == 0).all()
@@ -1861,14 +2283,19 @@ def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
             if not f:
                 return {"kind": "answer",
                         "answer": f"Finding #{mid.group(1)} does not exist.", "refs": {}}
+            alabel = _assist_asset_label(db, f.asset_id)
             return {"kind": "answer",
-                    "answer": f"Finding #{f.id}: {f.rule_id} [{f.severity}] on asset {f.asset_id}, "
+                    "answer": f"Finding #{f.id}: {f.rule_id} [{f.severity}] on {alabel}, "
                               f"workflow {f.workflow}. Detail: {(f.detail or '')[:400]}",
-                    "refs": {"finding_id": f.id, "asset_id": f.asset_id}}
+                    "refs": {"finding_id": f.id, "asset_id": f.asset_id,
+                             "asset_label": alabel}}
         d = _tool_list_findings(db, args)
         lines = [f"Open findings: {d['count']}."]
+        _anames = {str(a.id): (a.hostname or a.name or f"#{a.id}")
+                   for a in db.query(Asset).filter(Asset.retired == 0).all()}
         for f in d["findings"][:8]:
-            lines.append(f"- #{f['id']} {f['rule_id']} [{f['severity']}] asset {f['asset_id']}")
+            lines.append(f"- #{f['id']} {f['rule_id']} [{f['severity']}] "
+                         f"{_anames.get(str(f['asset_id']), '#' + str(f['asset_id']))}")
         if d["count"] > 8:
             lines.append(f"... and {d['count'] - 8} more. Narrow with a severity or asset.")
         return {"kind": "answer", "answer": "\n".join(lines),
@@ -1939,7 +2366,10 @@ def _assist_route(db: Session, conv: Conversation, text: str) -> dict:
 
     return {"kind": "answer",
             "answer": "I can't do that with the connected systems. I can query assets, findings, "
-                      "incidents, recovery and threats, and — with your approval — create incidents, "
+                      "incidents, recovery, threats, attack paths, change proposals, outdated "
+                      "operating systems and CVE context (live NVD/CISA lookup), and recommend "
+                      "defensive tooling, "
+                      "and — with your approval — create incidents, "
                       "draft remediation plans, assign tasks, run assessments, or run recovery "
                       "simulations. Ask 'what can you do' for the full list.",
             "refs": {}}
@@ -1962,10 +2392,11 @@ def _assist_polish(question: str, context_answer: str) -> tuple[str, str]:
 
 
 def _assist_answer(db: Session, conv: Conversation, user_text: str,
-                   actor: str) -> tuple[str, dict | None, dict, str]:
+                   actor: str) -> tuple[str, dict | None, dict, str, list]:
     """Run the router, create a pending task when proposed, return
-    (answer_text, task_row_or_None, refs, engine). Enforces role gates on
-    write tools. Engine is the live model id or 'fallback'."""
+    (answer_text, task_row_or_None, refs, engine, followups). Enforces role
+    gates on write tools. Engine is the live model id, 'fallback', or
+    'policy' for role denials."""
     route = _assist_route(db, conv, user_text)
     task_row = None
     if route.get("kind") == "propose":
@@ -1973,7 +2404,7 @@ def _assist_answer(db: Session, conv: Conversation, user_text: str,
         spec = _ASSIST_WRITE_TOOLS[proposal["type"]]
         if actor not in ("admin", "operator") and spec["min_role"] == "operator":
             return (f"That action needs an operator role — you are '{actor}'. "
-                    "Switch roles in the sidebar to proceed.", None, {}, "policy")
+                    "Switch roles in the sidebar to proceed.", None, {}, "policy", [])
         task_row = AITask(conversation_id=conv.id, requested_by=actor,
                           task_type=proposal["type"],
                           target_json=json.dumps(proposal["args"]),
@@ -1991,7 +2422,8 @@ def _assist_answer(db: Session, conv: Conversation, user_text: str,
     polished, model_used = _assist_polish(user_text, answer)
     if task_row is not None:
         polished += f"\n\nTask {task_row.correlation_id} is waiting for approval."
-    return polished, task_row, refs, model_used
+    followups = _assist_followups(refs, route.get("kind", "answer"), task_row)
+    return polished, task_row, refs, model_used, followups
 
 
 class AIConversationIn(BaseModel):
@@ -2006,11 +2438,60 @@ class AIRenameIn(BaseModel):
     title: str = Field(min_length=1, max_length=120)
 
 
+class AIImportIn(BaseModel):
+    export: dict = Field(default_factory=dict)
+
+
 def _assist_conv_out(db: Session, conv: Conversation) -> dict:
     last = (db.query(ChatMessage).filter(ChatMessage.conversation_id == conv.id)
             .order_by(ChatMessage.id.desc()).first())
     return {"id": conv.id, "title": conv.title, "updated_at": conv.updated_at,
-            "preview": ((last.content if last else "")[:120])}
+            "preview": ((last.content if last else "")[:120]),
+            "expired": _assist_expired(conv),
+            "expires_at": (conv.updated_at or 0) + _ASSIST_TTL_SECONDS}
+
+
+_ASSIST_TTL_SECONDS = 24 * 3600
+_ASSIST_EXPORT_VERSION = 1
+
+
+def _assist_expired(conv: Conversation) -> bool:
+    return (time.time() - (conv.updated_at or 0)) > _ASSIST_TTL_SECONDS
+
+
+def _assist_followups(refs: dict, route_kind: str, task_row) -> list[str]:
+    """Context-aware next questions derived from the refs just answered."""
+    out: list[str] = []
+    if task_row is not None:
+        return out
+    aid = refs.get("asset_id")
+    if aid is not None:
+        lbl = refs.get("asset_label") or f"#{aid}"
+        out += [f"Show open findings for asset {lbl} (#{aid})",
+                f"What threats affect {lbl}?"]
+    for fid in (refs.get("finding_ids") or [])[:1]:
+        out.append(f"Draft a remediation plan for finding #{fid}")
+    if refs.get("incident_id") is not None:
+        out.append(f"Show incident #{refs['incident_id']} details")
+    if refs.get("run_id") is not None:
+        out.append("Is recovery ready? Show the last run.")
+    if refs.get("target_asset_id") is not None:
+        tid = refs["target_asset_id"]
+        tlbl = refs.get("target_label") or f"#{tid}"
+        out.append(f"Show open findings for asset {tlbl} (#{tid})")
+    if refs.get("outdated_os"):
+        out.append("Which devices run outdated operating systems?")
+    if refs.get("proposal_id") is not None:
+        out.append("List all proposals")
+    if refs.get("advisory_ids"):
+        out.append("Which assets require attention?")
+    if not out:
+        if route_kind == "propose":
+            return out
+        out = ["Give me an overview of my environment.",
+               "What threats affect my assets?",
+               "What can I ask you to do?"][:2]
+    return out[:3]
 
 
 @app.get("/api/ai/health")
@@ -2068,6 +2549,7 @@ def api_ai_conv_get(cid: int, db: Session = Depends(get_db),
     msgs = (db.query(ChatMessage).filter(ChatMessage.conversation_id == cid)
             .order_by(ChatMessage.id).all())
     return {"id": conv.id, "title": conv.title, "updated_at": conv.updated_at,
+            "expired": _assist_expired(conv),
             "messages": [{"id": m.id, "role": m.role, "content": m.content,
                           "meta": json.loads(m.meta_json or "{}")} for m in msgs]}
 
@@ -2095,6 +2577,56 @@ def api_ai_conv_delete(cid: int, db: Session = Depends(get_db),
     return {"deleted": True}
 
 
+@app.get("/api/ai/conversations/{cid}/export")
+def api_ai_export(cid: int, db: Session = Depends(get_db),
+                  authorization: str | None = Header(default=None),
+                  x_role: str | None = Header(default=None)):
+    """Download a conversation (messages + task summaries) as versioned JSON."""
+    conv = _assist_get_conv(db, cid, _assist_actor(authorization, x_role))
+    msgs = (db.query(ChatMessage).filter(ChatMessage.conversation_id == cid)
+            .order_by(ChatMessage.id).all())
+    tasks = db.query(AITask).filter(AITask.conversation_id == cid).all()
+    return {"version": _ASSIST_EXPORT_VERSION, "exported_at": time.time(),
+            "conversation": {"title": conv.title},
+            "messages": [{"role": m.role, "content": m.content} for m in msgs][:200],
+            "tasks": [{"type": t.task_type, "status": t.status,
+                       "target": json.loads(t.target_json or "{}")}
+                      for t in tasks][:100]}
+
+
+@app.post("/api/ai/conversations/import", status_code=201)
+def api_ai_import(body: AIImportIn, db: Session = Depends(get_db),
+                  authorization: str | None = Header(default=None),
+                  x_role: str | None = Header(default=None)):
+    """Restore a previously exported conversation as a new thread.
+
+    Tasks import as history only — pending_approval never survives an import,
+    so nothing imported can execute without a fresh in-chat approval.
+    """
+    user = _assist_actor(authorization, x_role)
+    exp = body.export or {}
+    if exp.get("version") != _ASSIST_EXPORT_VERSION:
+        raise HTTPException(422, "unsupported export version")
+    title = str((exp.get("conversation") or {}).get("title", "") or "Imported chat")[:120]
+    messages = exp.get("messages") or []
+    if not isinstance(messages, list) or len(messages) > 200:
+        raise HTTPException(422, "messages must be a list of at most 200 items")
+    conv = Conversation(user_id=user, title=title)
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    for m in messages:
+        if not isinstance(m, dict):
+            raise HTTPException(422, "each message must be an object")
+        role = str(m.get("role", ""))
+        content = str(m.get("content", ""))
+        if role not in ("user", "assistant", "tool") or not content or len(content) > 4000:
+            raise HTTPException(422, "each message needs a valid role and 1-4000 chars of content")
+        db.add(ChatMessage(conversation_id=conv.id, role=role, content=content[:4000]))
+    db.commit()
+    return _assist_conv_out(db, conv)
+
+
 @app.post("/api/ai/conversations/{cid}/messages")
 def api_ai_message(cid: int, body: AIMessageIn, db: Session = Depends(get_db),
                    authorization: str | None = Header(default=None),
@@ -2102,12 +2634,14 @@ def api_ai_message(cid: int, body: AIMessageIn, db: Session = Depends(get_db),
     actor = _assist_actor(authorization, x_role)
     _check_rate(f"ai:{actor}")
     conv = _assist_get_conv(db, cid, actor)
+    if _assist_expired(conv):
+        raise HTTPException(410, "conversation expired after 24h of inactivity; start a new chat")
     _assist_msg(db, cid, "user", body.content.strip())
     if conv.title == "New conversation":
         conv.title = body.content.strip()[:60] or "New conversation"
         db.commit()
-    answer, task_row, refs, engine = _assist_answer(db, conv, body.content.strip(), actor)
-    meta = {"model_used": engine, "refs": refs}
+    answer, task_row, refs, engine, followups = _assist_answer(db, conv, body.content.strip(), actor)
+    meta = {"model_used": engine, "refs": refs, "followups": followups}
     if task_row is not None:
         meta["task"] = {"id": task_row.id, "type": task_row.task_type,
                         "status": task_row.status,
@@ -2127,12 +2661,14 @@ def api_ai_stream(cid: int, message: str, db: Session = Depends(get_db),
     if not message or len(message) > 4000:
         raise HTTPException(422, "message must be 1-4000 characters")
     conv = _assist_get_conv(db, cid, actor)
+    if _assist_expired(conv):
+        raise HTTPException(410, "conversation expired after 24h of inactivity; start a new chat")
     _assist_msg(db, cid, "user", message.strip())
     if conv.title == "New conversation":
         conv.title = message.strip()[:60] or "New conversation"
         db.commit()
-    answer, task_row, refs, engine = _assist_answer(db, conv, message.strip(), actor)
-    meta = {"model_used": engine, "refs": refs}
+    answer, task_row, refs, engine, followups = _assist_answer(db, conv, message.strip(), actor)
+    meta = {"model_used": engine, "refs": refs, "followups": followups}
     if task_row is not None:
         meta["task"] = {"id": task_row.id, "type": task_row.task_type,
                         "status": task_row.status,
@@ -2228,7 +2764,383 @@ def api_ai_task_cancel(tid: int, db: Session = Depends(get_db),
     return {"id": task.id, "status": "cancelled"}
 
 
+class ArchImportIn(BaseModel):
+    filename: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=1000000)
+
+
+def _arch_batch_out(b: ArchImportBatch) -> dict:
+    return {"id": b.id, "filename": b.filename, "format": b.format,
+            "status": b.status, "node_count": b.node_count,
+            "edge_count": b.edge_count,
+            "warnings": json.loads(b.warnings_json or "[]"),
+            "created_at": b.created_at}
+
+
+@app.post("/api/architecture/import", status_code=201)
+def api_arch_import(body: ArchImportIn, db: Session = Depends(get_db),
+                    authorization: str | None = Header(default=None),
+                    x_role: str | None = Header(default=None)):
+    """Parse an architecture upload into a staged preview batch. Nothing is
+    committed until POST /imports/{id}/commit."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.arch_import import service as arch
+    try:
+        batch = arch.save_preview(db, body.filename, body.content,
+                                  role_of(authorization, x_role))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _arch_batch_out(batch)
+
+
+@app.get("/api/architecture/imports")
+def api_arch_imports(db: Session = Depends(get_db),
+                     authorization: str | None = Header(default=None),
+                     x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    rows = (db.query(ArchImportBatch).order_by(ArchImportBatch.id.desc()).limit(50).all())
+    return [_arch_batch_out(b) for b in rows]
+
+
+@app.get("/api/architecture/imports/{bid}")
+def api_arch_import_get(bid: int, db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    b = db.query(ArchImportBatch).filter(ArchImportBatch.id == bid).first()
+    if not b:
+        raise HTTPException(404, "batch not found")
+    out = _arch_batch_out(b)
+    payload = json.loads(b.payload_json or "{}")
+    out["nodes"] = payload.get("nodes", [])
+    out["edges"] = payload.get("edges", [])
+    return out
+
+
+@app.post("/api/architecture/imports/{bid}/commit")
+def api_arch_import_commit(bid: int, db: Session = Depends(get_db),
+                           authorization: str | None = Header(default=None),
+                           x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    actor = role_of(authorization, x_role)
+    from app.arch_import import service as arch
+    try:
+        result = arch.commit_batch(db, bid)
+    except KeyError:
+        raise HTTPException(404, "batch not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    _assist_audit(db, actor, "arch_import_committed",
+                  f"batch={bid} assets+{result['created_assets']}/~{result['reused_assets']} "
+                  f"edges+{result['created_edges']}")
+    protector.notify_event("import", f"batch {bid} committed")
+    return result
+
+
+@app.post("/api/architecture/imports/{bid}/discard")
+def api_arch_import_discard(bid: int, db: Session = Depends(get_db),
+                            authorization: str | None = Header(default=None),
+                            x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    b = db.query(ArchImportBatch).filter(ArchImportBatch.id == bid).first()
+    if not b:
+        raise HTTPException(404, "batch not found")
+    if b.status != "preview":
+        raise HTTPException(409, f"batch is {b.status}")
+    b.status = "discarded"
+    db.commit()
+    return {"id": bid, "status": "discarded"}
+
+
+class ArchChecksRaiseIn(BaseModel):
+    rule_ids: list[str] = Field(default_factory=list)
+
+
+@app.get("/api/architecture/checks")
+def api_arch_checks(db: Session = Depends(get_db)):
+    """Preview AR-* structural findings. Read-only: nothing is stored."""
+    from app.arch_checks import service as arch_checks
+    return arch_checks.preview(db)
+
+
+@app.post("/api/architecture/checks/raise", status_code=201)
+def api_arch_checks_raise(body: ArchChecksRaiseIn | None = None,
+                          db: Session = Depends(get_db),
+                          authorization: str | None = Header(default=None),
+                          x_role: str | None = Header(default=None)):
+    """Evaluate AR-* checks and upsert architecture findings (idempotent)."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.arch_checks import service as arch_checks
+    wanted = [r for r in (body.rule_ids if body else []) if str(r).startswith("AR-")]
+    try:
+        return arch_checks.raise_findings(db, wanted or None, actor=role_of(authorization, x_role))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+class AttackPathsIn(BaseModel):
+    entry_asset_id: int | None = None
+    target_asset_id: int | None = None
+    max_depth: int = 5
+    max_paths: int = 5
+    exclude_edge_ids: list[int] = Field(default_factory=list)
+    exclude_asset_ids: list[int] = Field(default_factory=list)
+
+
+class AgentsInvestigateIn(BaseModel):
+    kind: str = Field(min_length=1)
+    ref: str = ""
+
+
+@app.get("/api/agents")
+def api_agents():
+    """The 13-member security team: capabilities, tools, schemas, budgets."""
+    from app.agents import registry
+    return {"agents": registry.describe()}
+
+
+@app.get("/api/agents/investigations")
+def api_agents_runs(db: Session = Depends(get_db)):
+    from app.models.models import AgentRun
+    return [{"id": r.id, "kind": r.kind, "ref": r.ref or "", "status": r.status,
+             "created_at": r.created_at}
+            for r in db.query(AgentRun).order_by(AgentRun.id.desc()).limit(50).all()]
+
+
+@app.post("/api/agents/investigations", status_code=201)
+def api_agents_investigate(body: AgentsInvestigateIn, db: Session = Depends(get_db),
+                           authorization: str | None = Header(default=None),
+                           x_role: str | None = Header(default=None)):
+    """Run a deterministic multi-agent investigation (bounded, synchronous)."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.agents import router, service as agents
+    try:
+        router.plan(body.kind)
+    except KeyError as e:
+        raise HTTPException(422, str(e))
+    return agents.run_investigation(db, body.kind, body.ref or "",
+                                    actor=role_of(authorization, x_role))
+
+
+@app.get("/api/agents/investigations/{iid}")
+def api_agents_run_one(iid: int, db: Session = Depends(get_db)):
+    from app.agents import service as agents
+    from app.models.models import AgentRun, AgentTask
+    run = db.query(AgentRun).filter(AgentRun.id == iid).first()
+    if not run:
+        raise HTTPException(404, "investigation not found")
+    tasks = db.query(AgentTask).filter(AgentTask.run_id == iid).order_by(AgentTask.id).all()
+    return agents._run_out(run, tasks)
+
+
+@app.post("/api/agents/investigations/{iid}/cancel")
+def api_agents_cancel(iid: int, db: Session = Depends(get_db),
+                      authorization: str | None = Header(default=None),
+                      x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    from app.agents import service as agents
+    try:
+        return agents.cancel_run(db, iid, actor=role_of(authorization, x_role))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+class ProposalIn(BaseModel):
+    title: str = Field(min_length=1)
+    rationale: str = ""
+
+
+class ProposalChangeIn(BaseModel):
+    op: str = Field(min_length=1)
+    payload: dict = Field(default_factory=dict)
+
+
+class ProposalSimulateIn(BaseModel):
+    must_block: list[dict] = Field(default_factory=list)
+    must_keep: list[dict] = Field(default_factory=list)
+
+
+class ProposalNoteIn(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/architecture/proposals", status_code=201)
+def api_proposal_create(body: ProposalIn, db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    """Stage an architecture change proposal. Nothing live changes."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.create(db, body.title, body.rationale,
+                                actor=role_of(authorization, x_role))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/architecture/proposals")
+def api_proposal_list(db: Session = Depends(get_db)):
+    from app.models.models import ArchProposal
+    from app.proposals import service as proposals
+    return [proposals._proposal_out(p, db) for p in
+            db.query(ArchProposal).order_by(ArchProposal.id.desc()).limit(50).all()]
+
+
+@app.get("/api/architecture/proposals/{pid}")
+def api_proposal_get(pid: int, db: Session = Depends(get_db)):
+    from app.proposals import service as proposals
+    try:
+        return proposals._proposal_out(proposals._get(db, pid), db)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/architecture/proposals/{pid}/changes", status_code=201)
+def api_proposal_change(pid: int, body: ProposalChangeIn, db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.add_change(db, pid, body.op, body.payload,
+                                    actor=role_of(authorization, x_role))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.delete("/api/architecture/proposals/{pid}/changes/{cid}")
+def api_proposal_change_del(pid: int, cid: int, db: Session = Depends(get_db),
+                            authorization: str | None = Header(default=None),
+                            x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.remove_change(db, pid, cid)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/architecture/proposals/{pid}/simulate")
+def api_proposal_simulate(pid: int, body: ProposalSimulateIn | None = None,
+                          db: Session = Depends(get_db),
+                          authorization: str | None = Header(default=None),
+                          x_role: str | None = Header(default=None)):
+    """Before/after simulation on a snapshot copy. Labels results simulated."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    body = body or ProposalSimulateIn()
+    try:
+        return proposals.simulate(db, pid, body.must_block, body.must_keep,
+                                  actor=role_of(authorization, x_role))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/architecture/proposals/{pid}/approve")
+def api_proposal_approve(pid: int, body: ProposalNoteIn | None = None,
+                         db: Session = Depends(get_db),
+                         authorization: str | None = Header(default=None),
+                         x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.approve(db, pid, actor=role_of(authorization, x_role),
+                                 note=(body.note if body else ""))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/architecture/proposals/{pid}/apply")
+def api_proposal_apply(pid: int, db: Session = Depends(get_db),
+                       authorization: str | None = Header(default=None),
+                       x_role: str | None = Header(default=None)):
+    """Apply an approved proposal to live records. Simulated must precede approval."""
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.apply(db, pid, actor=role_of(authorization, x_role))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/architecture/proposals/{pid}/reject")
+def api_proposal_reject(pid: int, body: ProposalNoteIn | None = None,
+                        db: Session = Depends(get_db),
+                        authorization: str | None = Header(default=None),
+                        x_role: str | None = Header(default=None)):
+    require_role("operator", role_of(authorization, x_role))
+    from app.proposals import service as proposals
+    try:
+        return proposals.reject(db, pid, actor=role_of(authorization, x_role),
+                                note=(body.note if body else ""))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/analysis/attack-paths")
+def api_attack_paths(body: AttackPathsIn | None = None, db: Session = Depends(get_db)):
+    """Defensive reachability analysis: entry points to high-value assets.
+
+    Read-only and deterministic; recomputed over the live graph on every
+    call. Pass exclude_* to compare against a proposed defensive change.
+    """
+    from app import attack_paths
+    body = body or AttackPathsIn()
+    try:
+        return attack_paths.analyze(
+            db, entry_asset_id=body.entry_asset_id, target_asset_id=body.target_asset_id,
+            max_depth=body.max_depth, max_paths=body.max_paths,
+            exclude_edge_ids=body.exclude_edge_ids, exclude_asset_ids=body.exclude_asset_ids)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/architecture/graph")
+def api_arch_graph(db: Session = Depends(get_db)):
+    """Normalized architecture graph with edge provenance for topology views."""
+    assets = db.query(Asset).filter(Asset.retired == 0).all()
+    rels = db.query(AssetRelationship).all()
+    return {"nodes": [{"id": a.id, "name": a.name, "kind": a.kind,
+                       "hostname": a.hostname or "", "zone": a.zone,
+                       "status": a.status, "criticality": a.criticality or ""}
+                      for a in assets],
+            "edges": [{"id": r.id, "source": r.source_id, "target": r.target_id,
+                       "rel": r.rel, "provenance": r.provenance or "manual",
+                       "confidence": r.confidence or "high"}
+                      for r in rels if r.source_type == "asset" and r.target_type == "asset"]}
+
+
+class DemoResetIn(BaseModel):
+    env: str = "a"
+
+
 @app.post("/api/demo/reset")
-def api_reset(db: Session = Depends(get_db)):
+def api_reset(body: DemoResetIn | None = None, db: Session = Depends(get_db),
+              authorization: str | None = Header(default=None),
+              x_role: str | None = Header(default=None)):
+    """Replace the demo estate with a reproducible fictional environment.
+
+    Admin-only: it wipes assets, findings, runs and incidents. env a/b/c
+    selects the water utility, Cloud SaaS, or Hybrid Enterprise fixture."""
+    require_role("admin", role_of(authorization, x_role))
     from app.seed import seed
-    return seed()
+    try:
+        return seed((body.env if body else "a"))
+    except ValueError as e:
+        raise HTTPException(422, str(e))

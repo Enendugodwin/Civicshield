@@ -113,6 +113,31 @@ def run_detection(db: Session, asset_ids: Optional[List[int]] = None, online: bo
     evidence = {str(a.id): _evidence(a) for a in assets}
 
     engine = baseline_guard.build_default_engine()
+    # Phase 6: operator-authored active detection drafts run in the same pass
+    # with identical PASS/FAIL/UNKNOWN semantics.
+    custom_active: set = set()
+    try:
+        from app import detection_rules as _dr
+        for rule_row, pred in _dr.active_rules(db):
+            custom_active.add(rule_row.rule_id)
+            _kind = pred.get("kind", "")
+            _path = pred.get("path", "")
+            _req = [f"custom:{_path}"]
+            _meta = baseline_guard.Rule(
+                rule_id=rule_row.rule_id, version=rule_row.version or "1.0.0",
+                name=rule_row.name or rule_row.rule_id,
+                description=rule_row.description or "Operator-authored detection draft.",
+                category="custom", severity=rule_row.severity or "medium",
+                required_evidence=_req,
+                remediation="Review the flagged evidence against the rule intent.")
+            _pred = dict(pred)
+
+            def _fn(ev, _p=_pred):
+                return _dr.evaluate(_p, ev if isinstance(ev, dict) else {})
+
+            engine.register(baseline_guard._mk(_meta, _fn))
+    except Exception:
+        pass  # a broken draft must never block the built-in engine
     config = engine.assess_all(evidence)
     config_findings = list(config.findings)
 
@@ -217,6 +242,14 @@ def run_detection(db: Session, asset_ids: Optional[List[int]] = None, online: bo
                     (old.workflow or "open") not in ("resolved", "false_positive"):
                 old.workflow = "resolved"
                 old.resolution_reason = "reassessed by detection: software no longer matches advisory"
+
+    # Resolve findings from retired custom rules: a rule that no longer runs
+    # must not leave its findings open forever. Draft rules never emitted.
+    for old in db.query(Finding).filter(Finding.rule_id.like("DR-%")).all():
+        if old.rule_id not in custom_active and \
+                (old.workflow or "open") not in ("resolved", "false_positive"):
+            old.workflow = "resolved"
+            old.resolution_reason = "reassessed by detection: custom rule retired"
 
     db.add(AuditEvent(
         actor=actor,

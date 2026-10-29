@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, Copy, Loader2, Pencil, Plus, RotateCcw, Search, Send, Square, Trash2, X } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Bot, Check, Copy, Download, Loader2, Pencil, Plus, RotateCcw, Search, Send, Square, Trash2, Upload, X } from 'lucide-react';
 import { api } from '../api';
 import { Badge, Err, Page } from '../components/ui';
 
@@ -63,9 +64,13 @@ export default function AIAssistant() {
   const [editTitle, setEditTitle] = useState('');
   const [sideOpen, setSideOpen] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
+  const [gone, setGone] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const qOnce = useRef(false);
 
   const loadConvs = useCallback(async (select?: number) => {
     try {
@@ -81,6 +86,7 @@ export default function AIAssistant() {
       const d = await api.get(`/api/ai/conversations/${id}`);
       setCid(id);
       setMsgs(d.messages ?? []);
+      setGone(!!d.expired);
       setErr('');
       setSideOpen(false);
     } catch (e: any) { setErr(String(e?.message ?? e)); }
@@ -89,12 +95,27 @@ export default function AIAssistant() {
   useEffect(() => { loadConvs(); }, [loadConvs]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [msgs, busy]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        inputRef.current?.focus();
+      } else if (e.key === 'Escape') {
+        if (sideOpen) setSideOpen(false);
+        else abortRef.current?.abort();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sideOpen]);
+
   const newChat = async () => {
     try {
       const c = await api.post('/api/ai/conversations', { title: '' });
       setConvs((l) => [c, ...l]);
       setCid(c.id);
       setMsgs([]);
+      setGone(false);
       setErr('');
       setSideOpen(false);
       inputRef.current?.focus();
@@ -178,7 +199,11 @@ export default function AIAssistant() {
       setMsgs((l) => l.map((m) => (m.id === tmpId ? { ...m, content: full, meta } : m)));
       loadConvs();
     } catch (e: any) {
-      if (ac.signal.aborted) {
+      if (/^410\b/.test(String(e?.message ?? e))) {
+        setGone(true);
+        setMsgs((l) => l.filter((m) => m.id !== tmpId));
+        setErr('This conversation expired after 24 hours of inactivity. Start a new chat to continue.');
+      } else if (ac.signal.aborted) {
         setMsgs((l) => l.map((m) => (m.id === tmpId ? { ...m, content: m.content || '*Response stopped — reload the conversation to see the full answer.*', meta: {} } : m)));
       } else {
         // Streaming failed (proxy/offline): fall back to the plain JSON endpoint.
@@ -201,6 +226,53 @@ export default function AIAssistant() {
     const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
     if (lastUser) send(lastUser.content);
   };
+
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    const initial = searchParams.get('q');
+    if (!qOnce.current && initial) {
+      qOnce.current = true;
+      setSearchParams({}, { replace: true });
+      void sendRef.current(initial);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — deep-link handoff, mount only
+
+  const exportConv = async () => {
+    if (cid == null) return;
+    try {
+      const d = await api.get(`/api/ai/conversations/${cid}/export`);
+      const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `assistant-chat-${cid}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) { setErr(String(e?.message ?? e)); }
+  };
+
+  const importConv = async (file: File) => {
+    setErr('');
+    try {
+      const parsed = JSON.parse(await file.text());
+      const c = await api.post('/api/ai/conversations/import', { export: parsed });
+      setConvs((l) => [c, ...l]);
+      loadConv(c.id);
+    } catch (e: any) { setErr(`Import failed: ${String(e?.message ?? e)}`); }
+  };
+
+  const followups = useMemo(() => {
+    if (busy || gone) return [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const f = msgs[i]?.meta?.followups;
+      if (Array.isArray(f) && f.length) {
+        // Only offer follow-ups for the latest assistant answer.
+        const laterUser = msgs.slice(i + 1).some((m) => m.role === 'user');
+        return laterUser ? [] : f.slice(0, 3);
+      }
+    }
+    return [];
+  }, [msgs, busy, gone]);
 
   const actTask = async (taskId: number, action: 'approve' | 'cancel') => {
     setErr('');
@@ -239,6 +311,11 @@ export default function AIAssistant() {
         <div className={`${sideOpen ? 'fixed inset-y-0 left-0 z-40 flex w-[min(20rem,86vw)] flex-col bg-rail p-3' : 'hidden'} lg:static lg:flex lg:flex-col`}>
           <div className="mb-2 flex items-center gap-1.5">
             <button className="btn flex-1" onClick={newChat}><Plus size={14} aria-hidden="true" /> New chat</button>
+            <button className="btn-sec" aria-label="Import conversation from JSON file"
+              title="Import a previously exported chat (JSON)"
+              onClick={() => fileRef.current?.click()}><Upload size={14} /></button>
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" aria-hidden="true" tabIndex={-1}
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) importConv(f); }} />
             <button className="btn-sec lg:hidden" onClick={() => setSideOpen(false)} aria-label="Close history"><X size={14} /></button>
           </div>
           <div className="relative mb-2">
@@ -270,8 +347,16 @@ export default function AIAssistant() {
         </div>
 
         <div className="card flex min-h-[60vh] flex-col">
+          {gone && (
+            <div className="mb-2 rounded-md border border-amber-300/30 bg-amber-500/[0.07] px-2.5 py-2 text-[12.5px] text-amber-300" role="status">
+              This conversation expired after 24 hours of inactivity — history stays readable, but no new messages. Start a new chat to continue.
+            </div>
+          )}
           <div className="mb-2 flex items-center gap-2">
             <button className="btn-sec lg:hidden" onClick={() => setSideOpen(true)} aria-label="Open history"><Search size={0} />History</button>
+            <button className="btn-sec ml-auto" onClick={exportConv} disabled={cid == null} aria-label="Export conversation as JSON">
+              <Download size={13} aria-hidden="true" /> Export
+            </button>
             {lastAsset != null && (
               <span className="badge border border-line/70 bg-raised/30 !text-slate-300">Context: asset #{lastAsset}</span>
             )}
@@ -341,16 +426,23 @@ export default function AIAssistant() {
           </div>
 
           <div className="mt-2 border-t border-line/70 pt-2">
+            {followups.length > 0 && (
+              <div className="mb-1.5 flex flex-wrap gap-1.5" aria-label="Suggested follow-ups">
+                {followups.map((s) => (
+                  <button key={s} className="btn-sec py-1 text-[11.5px]" disabled={busy || gone} onClick={() => send(s)}>{s}</button>
+                ))}
+              </div>
+            )}
             <div className="flex items-end gap-1.5">
               <textarea ref={inputRef} className="input max-h-36 min-h-[38px] flex-1 resize-none" rows={1}
-                placeholder="Ask about assets, findings, incidents, threats, recovery…"
-                aria-label="Message the assistant"
+                placeholder={gone ? 'Conversation expired — start a new chat' : 'Ask about assets, findings, incidents, threats, recovery… (Ctrl+K to focus)'}
+                aria-label="Message the assistant" disabled={gone}
                 value={input}
                 onChange={(e) => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 144)}px`; }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }} />
               {busy
-                ? <button className="btn-sec" aria-label="Stop generating" onClick={() => abortRef.current?.abort()}><Square size={14} /></button>
-                : <button className="btn" aria-label="Send message" disabled={!input.trim()} onClick={() => send(input)}><Send size={14} /></button>}
+                ? <button className="btn-sec" aria-label="Stop generating (Esc)" onClick={() => abortRef.current?.abort()}><Square size={14} /></button>
+                : <button className="btn" aria-label="Send message" disabled={!input.trim() || gone} onClick={() => send(input)}><Send size={14} /></button>}
             </div>
             <p className="mt-1 text-[10.5px] text-slate-600">Enter to send · Shift+Enter for a new line. Answers cite live records; actions always ask first.</p>
           </div>

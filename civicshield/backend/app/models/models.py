@@ -68,6 +68,26 @@ class AssetRelationship(Base):
     rel = Column(String, nullable=False)
     source_note = Column(String, default="verified")
     confidence = Column(String, default="high")
+    # Phase 1 provenance: how this edge is known. observed|configured|inferred|simulated|imported|manual
+    provenance = Column(String, default="manual")
+    evidence_ref = Column(Text, default="")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class ArchImportBatch(Base):
+    """Staged architecture import: preview first, commit explicitly, never partial."""
+    __tablename__ = "arch_import_batches"
+    id = Column(Integer, primary_key=True)
+    filename = Column(String, default="")
+    format = Column(String, default="")  # csv|json|mermaid
+    status = Column(String, default="preview")  # preview|committed|discarded
+    node_count = Column(Integer, default=0)
+    edge_count = Column(Integer, default=0)
+    warnings_json = Column(Text, default="[]")
+    payload_json = Column(Text, default="{}")
+    actor = Column(String, default="")
+    created_at = Column(Float, default=_ts)
 
 
 # Back-compat alias: old code imports Relationship.
@@ -232,6 +252,129 @@ class AuditEvent(Base):
     actor = Column(String, default="")
     action = Column(String, default="")
     detail = Column(Text, default="")
+    # Phase 6 hash chain (tamper-evidence). Filled automatically on insert
+    # for every writer via a mapper listener; legacy rows are backfilled once.
+    prev_hash = Column(String, default="")
+    entry_hash = Column(String, default="")
+
+
+class AppSetting(Base):
+    """Phase 6 governance + protector configuration as key/value rows."""
+    __tablename__ = "app_settings"
+    key = Column(String, primary_key=True)
+    value_json = Column(Text, default='""')
+    updated_by = Column(String, default="")
+    updated_at = Column(Float, default=_ts)
+
+
+class DetectionRule(Base):
+    """Phase 6 detection draft: a data-defined control evaluated with the
+    deterministic engine. Lifecycle: draft -> active -> retired (terminal)."""
+    __tablename__ = "detection_rules"
+    id = Column(Integer, primary_key=True)
+    rule_id = Column(String, unique=True, nullable=False)  # DR-XXXX
+    version = Column(String, default="1.0.0")
+    name = Column(String, default="")
+    description = Column(Text, default="")
+    category = Column(String, default="custom")
+    severity = Column(String, default="medium")
+    predicate_json = Column(Text, default="{}")
+    status = Column(String, default="draft")  # draft|active|retired
+    author = Column(String, default="")
+    activated_by = Column(String, default="")
+    test_json = Column(Text, default="{}")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class ProtectionRun(Base):
+    """Phase 6 continuous protector: one scheduled/event/manual reassessment."""
+    __tablename__ = "protection_runs"
+    id = Column(Integer, primary_key=True)
+    trigger = Column(String, default="manual")  # scheduled|event|manual
+    status = Column(String, default="complete")  # running|complete|failed
+    findings_opened = Column(Integer, default=0)
+    findings_reopened = Column(Integer, default=0)
+    findings_resolved = Column(Integer, default=0)
+    detail_json = Column(Text, default="{}")
+    actor = Column(String, default="")
+    started_at = Column(Float, default=_ts)
+    finished_at = Column(Float, default=0.0)
+
+
+class ProtectionNotification(Base):
+    """Phase 6 posture-change notice. Ack is operator-explicit, never automatic."""
+    __tablename__ = "protection_notifications"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String, default="")  # finding_opened|finding_reopened|finding_resolved|run_failed|evidence_stale
+    title = Column(Text, default="")
+    detail = Column(Text, default="")
+    finding_id = Column(Integer, default=0)
+    run_id = Column(Integer, default=0)
+    ack = Column(Integer, default=0)
+    created_at = Column(Float, default=_ts)
+
+
+class AgentRun(Base):
+    """One orchestrated investigation: kind + plan + merged outcome."""
+    __tablename__ = "agent_runs"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String, default="")
+    ref = Column(String, default="")
+    actor = Column(String, default="")
+    status = Column(String, default="running")  # running|complete|partial|cancelled
+    plan_json = Column(Text, default="[]")
+    summary_json = Column(Text, default="{}")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class AgentTask(Base):
+    """One specialist execution inside an investigation."""
+    __tablename__ = "agent_tasks"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, default=0)
+    agent_id = Column(String, default="")
+    batch = Column(Integer, default=1)
+    status = Column(String, default="pending")  # pending|running|done|failed|cancelled
+    attempts = Column(Integer, default=0)
+    elapsed_ms = Column(Integer, default=0)
+    result_json = Column(Text, default="{}")
+    error = Column(Text, default="")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class ArchProposal(Base):
+    """An architecture change proposal: edits staged, never live until applied."""
+    __tablename__ = "arch_proposals"
+    id = Column(Integer, primary_key=True)
+    title = Column(String, default="")
+    status = Column(String, default="draft")  # draft|simulated|approved|applied|rejected
+    actor = Column(String, default="")
+    rationale = Column(Text, default="")
+    created_at = Column(Float, default=_ts)
+    updated_at = Column(Float, default=_ts)
+
+
+class ArchProposalChange(Base):
+    """One graph edit inside a proposal: remove_edge | add_edge | update_asset."""
+    __tablename__ = "arch_proposal_changes"
+    id = Column(Integer, primary_key=True)
+    proposal_id = Column(Integer, default=0)
+    op = Column(String, default="")
+    payload_json = Column(Text, default="{}")
+    created_at = Column(Float, default=_ts)
+
+
+class ArchSimRun(Base):
+    """One before/after simulation of a proposal with verification outcomes."""
+    __tablename__ = "arch_sim_runs"
+    id = Column(Integer, primary_key=True)
+    proposal_id = Column(Integer, default=0)
+    request_json = Column(Text, default="{}")
+    result_json = Column(Text, default="{}")
+    created_at = Column(Float, default=_ts)
 
 
 class Conversation(Base):

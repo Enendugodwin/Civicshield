@@ -16,6 +16,9 @@ const InfraMap = lazy(() => import('./pages/InfraMap'));
 const Assets = lazy(() => import('./pages/Assets'));
 const Assessments = lazy(() => import('./pages/Assessments'));
 const Findings = lazy(() => import('./pages/Findings'));
+const AttackPaths = lazy(() => import('./pages/AttackPaths'));
+const Agents = lazy(() => import('./pages/Agents'));
+const Proposals = lazy(() => import('./pages/Proposals'));
 const Remediation = lazy(() => import('./pages/Remediation'));
 const AIAssistant = lazy(() => import('./pages/AIAssistant'));
 const Recovery = lazy(() => import('./pages/Recovery'));
@@ -35,7 +38,7 @@ function App() {
       <Route index element={<Overview />} /><Route path="overview" element={<Overview />} />
       <Route path="service-health" element={<Dashboard />} /><Route path="map" element={<InfraMap />} />
       <Route path="assets" element={<Assets />} /><Route path="assessments" element={<Assessments />} />
-      <Route path="findings" element={<Findings />} /><Route path="remediation" element={<Remediation />} /><Route path="assistant" element={<AIAssistant />} />
+      <Route path="findings" element={<Findings />} /><Route path="attack-paths" element={<AttackPaths />} /><Route path="agents" element={<Agents />} /><Route path="proposals" element={<Proposals />} /><Route path="remediation" element={<Remediation />} /><Route path="assistant" element={<AIAssistant />} />
       <Route path="recovery" element={<Recovery />} /><Route path="incidents" element={<Incidents />} />
       <Route path="threats" element={<Threats />} /><Route path="reports" element={<Reports />} />
       <Route path="settings" element={<Settings />} />

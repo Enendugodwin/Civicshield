@@ -32,5 +32,7 @@ class RelationshipOut(BaseModel):
     target_type: str
     target_id: int
     rel: str
+    provenance: str = "manual"
+    evidence_ref: str = ""
 
     model_config = {"from_attributes": True}

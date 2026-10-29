@@ -428,44 +428,80 @@ def ensure_realistic_data() -> dict:
         db.close()
 
 
-def seed() -> dict:
+def _insert_estate(db, assets, services, relationships, backup_records,
+                 incidents, indicators) -> dict:
+    """Wipe estate tables and insert one estate spec. Shared by all envs."""
+    for t in (BackupRecord, IncidentFindingLink, IncidentEvent, Incident,
+              ThreatIndicator, AssetRelationship, Service, Asset,
+              AssessmentResult, AssessmentRun, Finding, RiskAssessment):
+        db.query(t).delete()
+    for row in assets:
+        db.add(Asset(**row))
+    for row in services:
+        db.add(Service(**row))
+    for row in relationships:
+        db.add(AssetRelationship(**row))
+    for row in backup_records:
+        db.add(BackupRecord(**row))
+    now = time.time()
+    for spec in incidents:
+        created = now - spec.get("age_hours", 1) * 3600
+        inc = Incident(title=spec["title"], status=spec["status"],
+                       severity=spec["severity"], commander=spec["commander"],
+                       created_at=created)
+        db.add(inc)
+        db.flush()
+        for i, (kind, detail) in enumerate(spec["events"]):
+            db.add(IncidentEvent(incident_id=inc.id, kind=kind, detail=detail,
+                                 ts=created + (i + 1) * 90))
+    for item in indicators:
+        db.add(ThreatIndicator(value=item["value"], kind=item["kind"],
+                               confidence=item["confidence"], source=item["source"],
+                               expires_at=now + item["days"] * 86400))
+    db.commit()
+    return {"assets": len(assets), "services": len(services),
+            "relationships": len(relationships), "incidents": len(incidents),
+            "threat_indicators": len(indicators)}
+
+
+ENV_IDS = ("a", "b", "c")
+
+
+def seed(env: str = "a") -> dict:
+    """Seed the demo estate. env a = water utility (default, unchanged);
+    b = Cloud SaaS; c = Hybrid Enterprise. All estates are fictional."""
+    env = (env or "a").lower()
+    if env not in ENV_IDS:
+        raise ValueError(f"unknown demo environment (one of {', '.join(ENV_IDS)})")
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        for t in (BackupRecord, IncidentFindingLink, IncidentEvent, Incident,
-                  ThreatIndicator, AssetRelationship, Service, Asset,
-                  AssessmentResult, AssessmentRun, Finding, RiskAssessment):
-            db.query(t).delete()
-        for row in _prepared_assets():
-            db.add(Asset(**row))
-        for row in SERVICES:
-            db.add(Service(**row))
-        for row in RELATIONSHIPS:
-            db.add(AssetRelationship(**row))
-        db.add(BackupRecord(asset_id="5", last_success="2026-10-10T01:30:00Z", immutable_backup=0))
-        db.add(BackupRecord(asset_id="7", last_success="2026-10-25T00:00:00Z", immutable_backup=1))
-        now = time.time()
-        for spec in INCIDENTS:
-            created = now - spec.get("age_hours", 1) * 3600
-            inc = Incident(title=spec["title"], status=spec["status"],
-                           severity=spec["severity"], commander=spec["commander"],
-                           created_at=created)
-            db.add(inc)
-            db.flush()
-            for i, (kind, detail) in enumerate(spec["events"]):
-                db.add(IncidentEvent(incident_id=inc.id, kind=kind, detail=detail,
-                                     ts=created + (i + 1) * 90))
-        for item in THREAT_INDICATORS:
-            db.add(ThreatIndicator(value=item["value"], kind=item["kind"],
-                                   confidence=item["confidence"], source=item["source"],
-                                   expires_at=now + item["days"] * 86400))
-        db.commit()
-        return {"assets": len(ASSETS), "services": len(SERVICES),
-                "relationships": len(RELATIONSHIPS), "incidents": len(INCIDENTS),
-                "threat_indicators": len(THREAT_INDICATORS)}
+        if env == "a":
+            out = _insert_estate(
+                db, _prepared_assets(), SERVICES, RELATIONSHIPS,
+                [{"asset_id": "5", "last_success": "2026-10-10T01:30:00Z",
+                  "immutable_backup": 0},
+                 {"asset_id": "7", "last_success": "2026-10-25T01:30:00Z",
+                  "immutable_backup": 1}],
+                INCIDENTS, THREAT_INDICATORS)
+        else:
+            from app import seed_envs
+            if env not in seed_envs.ENVS:
+                raise ValueError(f"unknown demo environment (one of {', '.join(ENV_IDS)})")
+            estate = seed_envs.prepare_estate(env)
+            out = _insert_estate(
+                db, estate["assets"], estate["services"],
+                estate["relationships"], estate["backup_records"],
+                estate["incidents"], estate["indicators"])
+            out["meta"] = seed_envs.ENVS[env]["meta"]
+        from app import governance as _gov
+        _gov.set_setting(db, "demo.env", env, "seed")
+        out["env"] = env
+        return out
     finally:
         db.close()
 
 
 if __name__ == "__main__":
-    print(seed())
+    import sys as _sys
+    print(seed(_sys.argv[1] if len(_sys.argv) > 1 else "a"))

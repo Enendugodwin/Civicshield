@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ReactFlow, { Background, Controls, MiniMap } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Plus, Router, Network, ShieldCheck } from 'lucide-react';
+import { Plus, Router, Network, ShieldCheck, Upload } from 'lucide-react';
 import { api } from '../api';
 import { Err, Loading, Page } from '../components/ui';
 
@@ -31,6 +31,7 @@ const REL_COLOR: Record<string, string> = {
   backed_by: '#FBBF24',
   authenticates_via: '#C084FC',
   supplies: '#60A5FA',
+  failover: '#2DD4BF',
 };
 
 export default function InfraMap() {
@@ -45,6 +46,11 @@ export default function InfraMap() {
   const [showAdd, setShowAdd] = useState(() => new URLSearchParams(window.location.search).get('add') === '1');
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState('');
+  const [showImport, setShowImport] = useState(false);
+  const [impFile, setImpFile] = useState('estate.csv');
+  const [impText, setImpText] = useState('');
+  const [impBatch, setImpBatch] = useState<any>(null);
+  const [impBusy, setImpBusy] = useState(false);
   const [device, setDevice] = useState({
     name: '', kind: 'switch', hostname: '', owner: 'net-team', zone: 'core',
     criticality: 'high', status: 'operational', os_name: '',
@@ -155,6 +161,31 @@ export default function InfraMap() {
     try { await api.del(`/api/relationships/${id}`); load(); } catch (e: any) { setErr(String(e)); }
   };
 
+  const impUpload = async () => {
+    if (!impText.trim()) return;
+    setErr(''); setImpBusy(true);
+    try {
+      const b = await api.post('/api/architecture/import', { filename: impFile.trim() || 'estate.csv', content: impText });
+      const detail = await api.get(`/api/architecture/imports/${b.id}`);
+      setImpBatch(detail);
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setImpBusy(false); }
+  };
+  const impCommit = async () => {
+    if (!impBatch) return;
+    setErr(''); setImpBusy(true);
+    try {
+      const r = await api.post(`/api/architecture/imports/${impBatch.id}/commit`, {});
+      setNotice(`Import committed: +${r.created_assets} assets (${r.reused_assets} reused), +${r.created_edges} links.`);
+      setImpBatch(null); setImpText(''); setShowImport(false);
+      load();
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setImpBusy(false); }
+  };
+  const impDiscard = async () => {
+    if (!impBatch) return;
+    try { await api.post(`/api/architecture/imports/${impBatch.id}/discard`, {}); setImpBatch(null); }
+    catch (e: any) { setErr(String(e?.message ?? e)); }
+  };
+
   const nameOf = (type: string, id: any) => {
     if (type === 'service') {
       const s = services.find((x) => String(x.id) === String(id));
@@ -176,6 +207,9 @@ export default function InfraMap() {
       actions={
         <>
           <span className="text-[11px] text-slate-500">{assets.length} assets · {edges.length} relationships</span>
+          <button className="btn-sec" onClick={() => { setShowImport((v) => !v); setShowAdd(false); }} aria-expanded={showImport}>
+            <Upload size={14} aria-hidden="true" /> {showImport ? 'Close import' : 'Import inventory'}
+          </button>
           <button className="btn" onClick={() => setShowAdd((v) => !v)} aria-expanded={showAdd}>
             <Plus size={14} aria-hidden="true" /> {showAdd ? 'Close form' : 'Add device'}
           </button>
@@ -242,6 +276,60 @@ export default function InfraMap() {
         </div>
       )}
 
+      {showImport && (
+        <div className="card grid gap-2">
+          <h3 className="text-[11px] uppercase tracking-wide text-slate-500">
+            Import inventory (CSV) — preview first, commit writes only asset records + verified links
+          </h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="input max-w-56" value={impFile}
+              onChange={(e) => setImpFile(e.target.value)}
+              aria-label="Filename" placeholder="estate.csv"
+            />
+            <button className="btn" onClick={impUpload} disabled={impBusy || !impText.trim()}>
+              {impBusy ? 'Parsing…' : 'Upload & preview'}
+            </button>
+            <button className="btn-sec" onClick={() => { setShowImport(false); setImpBatch(null); }}>Close</button>
+            <span className="text-[10px] text-slate-500">
+              Columns: name, kind (or type), hostname, zone, owner, os_name, criticality, depends_on, authenticates_via, connects_to. Duplicates are matched by name or hostname and reused.
+            </span>
+          </div>
+          <textarea
+            className="input font-mono text-[11px]" rows={5} value={impText}
+            onChange={(e) => setImpText(e.target.value)}
+            placeholder={'name,type,hostname,zone,criticality,os_name,connects_to\nnew-switch-01,switch,sw-new-01,central,high,Cisco IOS 15.2,'}
+            aria-label="CSV content"
+          />
+          {impBatch && (
+            <div className="rounded-md border border-line/70 bg-raised/40 p-2.5 text-[12px]">
+              <div className="font-semibold text-slate-200">
+                Batch {impBatch.id} — {impBatch.status}: {impBatch.nodes?.length ?? 0} nodes, {impBatch.edges?.length ?? 0} links
+              </div>
+              {(impBatch.warnings?.length ?? 0) > 0 && (
+                <ul className="mt-1 list-disc pl-5 text-amber-300">
+                  {impBatch.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                </ul>
+              )}
+              <div className="mt-1 max-h-32 overflow-auto text-slate-400">
+                {(impBatch.nodes ?? []).slice(0, 8).map((n: any, i: number) => (
+                  <div key={i}>+ {n.name} <span className="text-slate-500">({n.kind}{n.zone ? ` · ${n.zone}` : ''}{n.criticality ? ` · ${n.criticality}` : ''}{n.os_name ? ` · ${n.os_name}` : ''})</span></div>
+                ))}
+                {(impBatch.edges ?? []).slice(0, 8).map((e: any, i: number) => (
+                  <div key={`e${i}`} className="text-slate-500">⤷ {e.source} —{e.rel}→ {e.target}</div>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button className="btn" onClick={impCommit} disabled={impBusy || impBatch.status !== 'preview'}>
+                  {impBusy ? 'Committing…' : 'Commit to inventory'}
+                </button>
+                <button className="btn-sec" onClick={impDiscard} disabled={impBusy}>Discard</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card">
         <div className="grid gap-2 sm:grid-cols-3">
           <div className="flex items-center gap-2 rounded-md border border-line/70 bg-raised/40 px-2.5 py-2">
@@ -285,21 +373,38 @@ export default function InfraMap() {
       <div className="card grid gap-2">
         <h3 className="text-[11px] uppercase tracking-wide text-slate-500">Relationships (verified links only — hypothetical edges are not drawn)</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
-          <select className="input" value={rel.source_type} onChange={(e) => setRel({ ...rel, source_type: e.target.value })} aria-label="Source type">
+          <select className="input" value={rel.source_type} onChange={(e) => setRel({ ...rel, source_type: e.target.value, source_id: '' })} aria-label="Source type">
             <option value="asset">asset</option><option value="service">service</option>
           </select>
-          <input className="input" placeholder="source id" value={rel.source_id} onChange={(e) => setRel({ ...rel, source_id: e.target.value })} aria-label="Source ID" />
-          <select className="input" value={rel.target_type} onChange={(e) => setRel({ ...rel, target_type: e.target.value })} aria-label="Target type">
+          <select className="input" value={rel.source_id} onChange={(e) => setRel({ ...rel, source_id: e.target.value })} aria-label="Source endpoint">
+            <option value="">Source…</option>
+            {(rel.source_type === 'asset' ? assets : services).map((x: any) => (
+              <option key={x.id} value={x.id}>#{x.id} {x.name || x.hostname}</option>
+            ))}
+          </select>
+          <select className="input" value={rel.target_type} onChange={(e) => setRel({ ...rel, target_type: e.target.value, target_id: '' })} aria-label="Target type">
             <option value="asset">asset</option><option value="service">service</option>
           </select>
-          <input className="input" placeholder="target id" value={rel.target_id} onChange={(e) => setRel({ ...rel, target_id: e.target.value })} aria-label="Target ID" />
-          <input className="input" placeholder="relation" value={rel.rel} onChange={(e) => setRel({ ...rel, rel: e.target.value })} aria-label="Relation" />
+          <select className="input" value={rel.target_id} onChange={(e) => setRel({ ...rel, target_id: e.target.value })} aria-label="Target endpoint">
+            <option value="">Target…</option>
+            {(rel.target_type === 'asset' ? assets : services).map((x: any) => (
+              <option key={x.id} value={x.id}>#{x.id} {x.name || x.hostname}</option>
+            ))}
+          </select>
+          <select className="input" value={rel.rel} onChange={(e) => setRel({ ...rel, rel: e.target.value })} aria-label="Relation">
+            {['depends_on', 'authenticates_via', 'monitors', 'backs_up', 'backed_by', 'connects_to', 'manages', 'serves', 'failover'].map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
           <button className="btn" onClick={addRel} disabled={!rel.source_id || !rel.target_id || !rel.rel}>Add link</button>
         </div>
         <div className="max-h-44 overflow-auto text-[12px] text-slate-400">
           {rels.map((r: any) => (
             <div key={r.id} className="flex items-center gap-2 py-0.5">
               <span>{nameOf(r.source_type, r.source_id)} <span style={{ color: REL_COLOR[r.rel] ?? '#34D399' }}>—{r.rel}→</span> {nameOf(r.target_type, r.target_id)}</span>
+              {r.provenance && r.provenance !== 'manual' && (
+                <span className="badge" title={`Imported via ${r.provenance}`}>import:{r.provenance}</span>
+              )}
               <button className="ml-auto text-slate-500 hover:text-red-300" onClick={() => delRel(Number(r.id))}>Remove</button>
             </div>
           ))}

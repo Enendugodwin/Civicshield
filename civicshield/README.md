@@ -20,7 +20,9 @@ cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # Seed demo data (13 assets, including router/switch network devices):
-python -m app.seed
+python -m app.seed        # env a: water utility (default)
+python -m app.seed b      # env b: Cloud SaaS (8 assets)
+python -m app.seed c      # env c: hybrid enterprise (7 assets)
 
 cd ../frontend
 npm install

@@ -18,12 +18,42 @@ export default function Threats() {
   const [kevOnly, setKevOnly] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [form, setForm] = useState({ value: '', kind: 'domain', confidence: 'medium', source: '' });
+  const [rules, setRules] = useState<any[]>([]);
+  const [ruleForm, setRuleForm] = useState({ rule_id: '', name: '', severity: 'medium', kind: 'evidence_missing', path: '', value: '' });
+  const [ruleBusy, setRuleBusy] = useState<number | string | null>(null);
+  const [previews, setPreviews] = useState<Record<number, any>>({});
   const load = () => {
     api.get('/api/threat-indicators').then((d: any) => setItems(d.items ?? d ?? [])).catch((e) => setErr(String(e))).finally(() => setLoading(false));
     api.get('/api/identity').then(setIdentity).catch(() => {});
     api.get('/api/threats/exposure').then(setExposure).catch(() => {});
     api.get('/api/threats/sync-status').then(setSync).catch(() => {});
+    api.get('/api/detection/rules').then((d: any) => setRules(d.rules ?? [])).catch(() => {});
   };
+  const reloadRules = () => api.get('/api/detection/rules').then((d: any) => setRules(d.rules ?? [])).catch((e) => setErr(String(e)));
+  const buildPredicate = () => {
+    const { kind, path, value } = ruleForm;
+    if (kind === 'evidence_in') return { kind, path, values: value.split(',').map((s) => s.trim()).filter(Boolean) };
+    if (kind === 'evidence_missing') return { kind, path };
+    return { kind, path, value };
+  };
+  const ruleAction = async (key: number | string, fn: () => Promise<any>) => {
+    if (ruleBusy) return;
+    setErr(''); setRuleBusy(key);
+    try { await fn(); await reloadRules(); }
+    catch (e: any) { setErr(String(e?.message ?? e)); }
+    finally { setRuleBusy(null); }
+  };
+  const addRule = () => ruleAction('new', async () => {
+    await api.post('/api/detection/rules', {
+      rule_id: ruleForm.rule_id.trim().toUpperCase(), name: ruleForm.name.trim(),
+      severity: ruleForm.severity, predicate: buildPredicate(),
+    });
+    setRuleForm({ rule_id: '', name: '', severity: 'medium', kind: 'evidence_missing', path: '', value: '' });
+  });
+  const testRule = (id: number) => ruleAction(id, async () => {
+    const p = await api.post(`/api/detection/rules/${id}/test`, {});
+    setPreviews((m) => ({ ...m, [id]: p }));
+  });
   useEffect(() => { load(); }, []);
   const analyze = async (advisoryId: string) => {
     if (analyzing) return;
@@ -195,6 +225,89 @@ export default function Threats() {
           </div>
         </div>
       )}
+      <div className="card">
+        <h3 className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Detection drafts — operator-authored controls (draft → active → retired)</h3>
+        <p className="mb-2 text-[11.5px] text-slate-400">
+          Drafts are data, not code: a predicate over collected asset evidence evaluated with the same
+          PASS / FAIL / UNKNOWN semantics as built-in controls. Test previews never write findings;
+          activation needs the operator role and honors the dual-control governance policy.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+          <label className="grid gap-1 text-[11px] text-slate-500">Rule ID
+            <input className="input font-mono" value={ruleForm.rule_id} onChange={(e) => setRuleForm({ ...ruleForm, rule_id: e.target.value })} placeholder="DR-EOL-01" aria-label="Rule ID" />
+          </label>
+          <label className="grid gap-1 text-[11px] text-slate-500">Name
+            <input className="input" value={ruleForm.name} onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })} placeholder="Unsupported OS build" aria-label="Rule name" />
+          </label>
+          <label className="grid gap-1 text-[11px] text-slate-500">Predicate
+            <select className="input" value={ruleForm.kind} onChange={(e) => setRuleForm({ ...ruleForm, kind: e.target.value })} aria-label="Predicate kind">
+              <option value="evidence_missing">missing evidence path</option>
+              <option value="evidence_equals">path equals value</option>
+              <option value="evidence_in">path in list</option>
+              <option value="evidence_gt">path greater than</option>
+              <option value="evidence_lt">path less than</option>
+              <option value="evidence_contains">path contains text</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-[11px] text-slate-500">Evidence path
+            <input className="input font-mono" value={ruleForm.path} onChange={(e) => setRuleForm({ ...ruleForm, path: e.target.value })} placeholder="os.supported" aria-label="Evidence path" />
+          </label>
+          <label className="grid gap-1 text-[11px] text-slate-500">Value
+            <input className="input" value={ruleForm.value} onChange={(e) => setRuleForm({ ...ruleForm, value: e.target.value })} placeholder="false / comma list" aria-label="Predicate value" />
+          </label>
+          <label className="grid gap-1 text-[11px] text-slate-500">Severity
+            <select className="input" value={ruleForm.severity} onChange={(e) => setRuleForm({ ...ruleForm, severity: e.target.value })} aria-label="Severity">
+              <option value="critical">critical</option><option value="high">high</option>
+              <option value="medium">medium</option><option value="low">low</option><option value="info">info</option>
+            </select>
+          </label>
+        </div>
+        <div className="mt-2">
+          <button className="btn" disabled={ruleBusy === 'new' || !ruleForm.rule_id.trim() || !ruleForm.name.trim() || !ruleForm.path.trim()} onClick={addRule}>
+            {ruleBusy === 'new' ? 'Saving…' : 'Save draft'}
+          </button>
+        </div>
+        {rules.length === 0 ? (
+          <p className="mt-2 py-2 text-center text-[12px] text-slate-500">No custom detection rules yet.</p>
+        ) : (
+          <div className="tblwrap mt-2 max-h-72 overflow-y-auto"><table className="tbl min-w-[760px]">
+            <thead><tr><th>Rule</th><th>Name</th><th>Severity</th><th>Status</th><th>Last test</th><th>Actions</th></tr></thead>
+            <tbody>{rules.map((r: any) => {
+              const pv = previews[r.id] ?? r.last_test;
+              return (
+                <tr key={r.id}>
+                  <td className="font-mono text-[11px] text-slate-200">{r.rule_id}</td>
+                  <td className="max-w-[14rem] truncate text-slate-300" title={r.description}>{r.name}</td>
+                  <td><Badge text={String(r.severity)} /></td>
+                  <td><Badge text={String(r.status)} /></td>
+                  <td className="text-[11px] text-slate-400">
+                    {pv && typeof pv.fail_count === 'number'
+                      ? `${pv.fail_count} fail · ${pv.pass_count} pass · ${pv.unknown_count} unknown of ${pv.assets}`
+                      : '—'}
+                  </td>
+                  <td>
+                    <div className="flex flex-wrap gap-1">
+                      <button className="btn-sec" disabled={ruleBusy === r.id} onClick={() => testRule(r.id)}>Test</button>
+                      {r.status === 'draft' && (
+                        <button className="btn-sec" disabled={ruleBusy === r.id}
+                          onClick={() => ruleAction(r.id, () => api.post(`/api/detection/rules/${r.id}/activate`, {}))}>
+                          Activate
+                        </button>
+                      )}
+                      {r.status !== 'retired' && (
+                        <button className="btn-sec" disabled={ruleBusy === r.id}
+                          onClick={() => ruleAction(r.id, () => api.post(`/api/detection/rules/${r.id}/retire`, {}))}>
+                          Retire
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
+      </div>
       <div className="card grid sm:grid-cols-2 lg:grid-cols-5 gap-2">
         <label className="grid gap-1 text-[11px] text-slate-500">Value<input className="input" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} placeholder="malicious.example" /></label>
         <label className="grid gap-1 text-[11px] text-slate-500">Kind

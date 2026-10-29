@@ -12,6 +12,12 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('ALL');
   const [resetting, setResetting] = useState(false);
+  const [prot, setProt] = useState<any>(null);
+  const [protForm, setProtForm] = useState({ enabled: true, interval_seconds: 3600, keep_runs: 50, notify_retention_days: 30 });
+  const [policies, setPolicies] = useState<any>(null);
+  const [dual, setDual] = useState(false);
+  const [verify, setVerify] = useState<any>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeId>(getTheme());
   const pickTheme = (next: ThemeId) => {
     setTheme(next);
@@ -24,19 +30,69 @@ export default function Settings() {
     Promise.all([
       api.get('/api/audit'),
       api.health().catch(() => null),
-    ]).then(([a, h]) => {
+      api.get('/api/protection/status').catch(() => null),
+      api.get('/api/governance/policies').catch(() => null),
+    ]).then(([a, h, p, g]) => {
       setAudit(a.items ?? a ?? []);
       setHealth(h);
+      setProt(p);
+      if (p) setProtForm({
+        enabled: !!p.enabled,
+        interval_seconds: Number(p.interval_seconds ?? 3600),
+        keep_runs: Number(p.keep_runs ?? 50),
+        notify_retention_days: 30,
+      });
+      setPolicies(g);
+      if (g) setDual(!!g.require_distinct_approver);
     }).catch((e) => setErr(String(e?.message ?? e))).finally(() => setLoading(false));
   };
   useEffect(load, []);
 
+  const saveProt = async () => {
+    if (busy) return;
+    setErr(''); setNote(''); setBusy('prot');
+    try {
+      const d = await api.patch('/api/protection/config', protForm);
+      setProt(d);
+      setNote('Protection schedule updated.');
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(null); }
+  };
+  const runNow = async () => {
+    if (busy) return;
+    setErr(''); setNote(''); setBusy('run');
+    try {
+      const d = await api.post('/api/protection/run', {});
+      setNote(`Reassessment run #${d.run_id} complete: +${d.opened} opened, ~${d.reopened} changed, -${d.resolved} cleared.`);
+      const p = await api.get('/api/protection/status').catch(() => null);
+      if (p) setProt(p);
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(null); }
+  };
+  const savePolicies = async () => {
+    if (busy) return;
+    setErr(''); setNote(''); setBusy('gov');
+    try {
+      const d = await api.patch('/api/governance/policies', { require_distinct_approver: dual });
+      setPolicies(d);
+      setNote('Governance policy updated (admin).');
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(null); }
+  };
+  const verifyChain = async () => {
+    if (busy) return;
+    setErr(''); setNote(''); setBusy('verify'); setVerify(null);
+    try {
+      const d = await api.get('/api/governance/audit-verify');
+      setVerify(d);
+      setNote(d.ok ? `Audit chain verified: ${d.checked} events, head ${String(d.head ?? '').slice(0, 12)}…` : `Audit chain BROKEN at event ${d.broken_at}: ${d.reason}`);
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(null); }
+  };
+
+  const [demoEnv, setDemoEnv] = useState('a');
   const reset = async () => {
     if (!window.confirm('Reset the demo database? This replaces assets, findings, incidents and runs with the seeded demo data.')) return;
     setErr(''); setNote(''); setResetting(true);
     try {
-      await api.post('/api/demo/reset', {});
-      setNote('Demo data reset. Reloading records…');
+      const d = await api.post('/api/demo/reset', { env: demoEnv });
+      setNote(`Demo data reset to environment ${d.env ?? demoEnv}. Reloading records…`);
       load();
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -58,7 +114,7 @@ export default function Settings() {
       {err && <Err msg={err} retry={load} />}
       {note && <p role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.07] px-3 py-2 text-[12px] text-emerald-200">{note}</p>}
 
-      <div className="grid gap-3 lg:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         <div className="card">
           <div className="mb-1.5 flex items-center gap-2">
             <Palette size={15} className="text-slate-400" aria-hidden="true" />
@@ -128,11 +184,80 @@ export default function Settings() {
             <h2 className="text-[13px]">Demo data</h2>
           </div>
           <p className="text-[11.5px] leading-relaxed text-slate-400">
-            Restore the seeded water-utility estate. This replaces current records, findings and runs.
+            Restore a reproducible fictional estate. This replaces current records, findings and runs.
           </p>
+          <label className="mt-1.5 grid gap-1 text-[10.5px] text-slate-500">Environment
+            <select className="input py-1" value={demoEnv} onChange={(e) => setDemoEnv(e.target.value)} aria-label="Demo environment">
+              <option value="a">A · Community water utility</option>
+              <option value="b">B · Cloud SaaS</option>
+              <option value="c">C · Hybrid enterprise</option>
+            </select>
+          </label>
           <button className="btn-sec mt-2 border-rose-500/30 text-rose-200 hover:bg-rose-500/10" onClick={reset} disabled={resetting}>
             <RefreshCcw size={13} aria-hidden="true" /> {resetting ? 'Resetting…' : 'Reset demo environment'}
           </button>
+        </div>
+
+        <div className="card">
+          <div className="mb-1.5 flex items-center gap-2">
+            <ShieldCheck size={15} className="text-slate-400" aria-hidden="true" />
+            <h2 className="text-[13px]">Continuous protection</h2>
+            {prot && <span className="ml-auto"><Badge text={prot.enabled ? 'scheduled' : 'paused'} /></span>}
+          </div>
+          <label className="flex items-center gap-1.5 text-[11.5px] text-slate-300">
+            <input type="checkbox" checked={protForm.enabled} onChange={(e) => setProtForm({ ...protForm, enabled: e.target.checked })} />
+            Scheduled reassessment enabled
+          </label>
+          <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+            <label className="grid gap-1 text-[10.5px] text-slate-500">Interval (s)
+              <input type="number" min={60} max={86400} className="input py-1" value={protForm.interval_seconds}
+                onChange={(e) => setProtForm({ ...protForm, interval_seconds: Number(e.target.value) })} aria-label="Reassessment interval seconds" />
+            </label>
+            <label className="grid gap-1 text-[10.5px] text-slate-500">Keep runs
+              <input type="number" min={5} max={500} className="input py-1" value={protForm.keep_runs}
+                onChange={(e) => setProtForm({ ...protForm, keep_runs: Number(e.target.value) })} aria-label="Protection runs retained" />
+            </label>
+            <label className="grid gap-1 text-[10.5px] text-slate-500">Notice days
+              <input type="number" min={1} max={365} className="input py-1" value={protForm.notify_retention_days}
+                onChange={(e) => setProtForm({ ...protForm, notify_retention_days: Number(e.target.value) })} aria-label="Notification retention days" />
+            </label>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <button className="btn-sec" onClick={saveProt} disabled={busy === 'prot'}>{busy === 'prot' ? 'Saving…' : 'Save schedule'}</button>
+            <button className="btn-sec" onClick={runNow} disabled={busy === 'run'}>{busy === 'run' ? 'Running…' : 'Run reassessment now'}</button>
+          </div>
+          <p className="mt-1.5 text-[10.5px] text-slate-500">
+            Estate edits queue an event reassessment automatically; the scheduler re-runs detection on the interval.
+          </p>
+        </div>
+
+        <div className="card">
+          <div className="mb-1.5 flex items-center gap-2">
+            <UserCog size={15} className="text-slate-400" aria-hidden="true" />
+            <h2 className="text-[13px]">Governance</h2>
+          </div>
+          <label className="flex items-center gap-1.5 text-[11.5px] text-slate-300">
+            <input type="checkbox" checked={dual} onChange={(e) => setDual(e.target.checked)} />
+            Dual control for detection drafts
+          </label>
+          <p className="mt-1 text-[10.5px] text-slate-500">
+            When on, activating a draft needs an approver other than its author (admin setting, enforced server-side).
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <button className="btn-sec" onClick={savePolicies} disabled={busy === 'gov'}>{busy === 'gov' ? 'Saving…' : 'Save policy'}</button>
+            <button className="btn-sec" onClick={verifyChain} disabled={busy === 'verify'}>{busy === 'verify' ? 'Verifying…' : 'Verify audit chain'}</button>
+          </div>
+          {verify && (
+            <p className={`mt-1.5 text-[11px] ${verify.ok ? 'text-emerald-300' : 'text-rose-300'}`} role="status">
+              {verify.ok
+                ? `Chain intact: ${verify.checked} events verified.`
+                : `Chain broken at event ${verify.broken_at}: ${verify.reason}`}
+            </p>
+          )}
+          <p className="mt-1.5 text-[10.5px] text-slate-500">
+            Every audit insert is hash-chained (SHA-256 over previous hash, timestamp, actor, action, detail).
+            The log is append-only: no update or delete endpoint exists.
+          </p>
         </div>
       </div>
 

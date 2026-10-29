@@ -21,12 +21,14 @@ function ago(ts?: number) {
 export default function Overview() {
   const [data, setData] = useState<any>(null);
   const [err, setErr] = useState('');
+  const [ackBusy, setAckBusy] = useState<number | null>(null);
+  const [ackErr, setAckErr] = useState('');
 
   useEffect(() => {
     let live = true;
     (async () => {
       try {
-        const [a, f, as, inc, h, audit, readiness, posture] = await Promise.all([
+        const [a, f, as, inc, h, audit, readiness, posture, prot, notes] = await Promise.all([
           api.get('/api/assets').catch(() => []),
           api.get('/api/findings').catch(() => []),
           api.get('/api/assessments').catch(() => []),
@@ -35,6 +37,8 @@ export default function Overview() {
           api.get('/api/audit').catch(() => []),
           api.get('/api/recovery/readiness').catch(() => null),
           api.get('/api/detection/posture').catch(() => null),
+          api.get('/api/protection/status').catch(() => null),
+          api.get('/api/protection/notifications?unacked_only=true').catch(() => null),
         ]);
         const assets = a.items ?? a ?? [];
         const findings = f.items ?? f ?? [];
@@ -44,7 +48,7 @@ export default function Overview() {
           ? await api.get(`/api/assessments/${latest.id}`).catch(() => [])
           : [];
         if (!live) return;
-        setData({ assets, findings, runs, latest, results, inc, h, audit, readiness, posture });
+        setData({ assets, findings, runs, latest, results, inc, h, audit, readiness, posture, prot, notes: notes?.notifications ?? [] });
       } catch (e: any) {
         if (live) setErr(String(e?.message ?? e));
       }
@@ -52,11 +56,24 @@ export default function Overview() {
     return () => { live = false; };
   }, []);
 
+  const ack = async (id: number) => {
+    if (ackBusy) return;
+    setAckErr(''); setAckBusy(id);
+    try {
+      await api.post(`/api/protection/notifications/${id}/ack`, {});
+      setData((d: any) => d && { ...d, notes: (d.notes ?? []).filter((n: any) => n.id !== id) });
+    } catch (e: any) {
+      setAckErr(String(e?.message ?? e));
+    } finally {
+      setAckBusy(null);
+    }
+  };
+
   const crumb = 'CivicShield / Overview';
   if (err) return <Page title="Overview" crumb={crumb}><Err msg={err} /></Page>;
   if (!data) return <Page title="Overview" crumb={crumb}><Loading msg="Loading live records" /></Page>;
 
-  const { assets, findings, runs, latest, results, inc, h, audit, readiness, posture } = data;
+  const { assets, findings, runs, latest, results, inc, h, audit, readiness, posture, prot, notes } = data;
   const incidents = inc.items ?? inc ?? [];
   const activity = (audit.items ?? audit ?? [])
     .filter((x: any) => !String(x.action).startsWith('assessment_run'))
@@ -154,6 +171,49 @@ export default function Overview() {
           <div className="text-[10px] text-slate-500">essential services meeting RTO criteria</div>
         </div>
       </div>
+
+      {prot && (
+        <div className="card">
+          <div className="mb-2 flex flex-wrap items-baseline gap-2">
+            <h2 className="text-[13px]">Continuous protection</h2>
+            <Badge text={prot.enabled ? 'scheduled' : 'paused'} />
+            {prot.last_run ? (
+              <span className="font-mono text-[10px] text-slate-500">
+                run #{prot.last_run.id} · {prot.last_run.trigger} · {prot.last_run.status} ·
+                +{prot.last_run.opened}/~{prot.last_run.reopened}/-{prot.last_run.resolved} ·
+                {ago(prot.last_run.finished_at || prot.last_run.started_at)}
+              </span>
+            ) : <span className="text-[11px] text-slate-500">No reassessment runs yet</span>}
+            <span className="ml-auto text-[10px] text-slate-500">
+              {prot.pending_events} queued · every {Math.round((prot.interval_seconds ?? 3600) / 60)} min ·
+              {' '}{prot.unacked_notifications} unacknowledged
+            </span>
+          </div>
+          {(notes ?? []).length === 0 ? (
+            <p className="py-1 text-[12px] text-slate-500">
+              Posture changes (new, changed, or cleared findings) appear here after each scheduled or
+              event-driven reassessment. Nothing outstanding.
+            </p>
+          ) : (
+            <ul className="grid gap-1.5">
+              {(notes ?? []).slice(0, 5).map((n: any) => (
+                <li key={n.id} className="flex items-center gap-2 rounded-md border border-line/60 bg-raised/30 px-2 py-1.5">
+                  <Badge text={String(n.kind).replace(/_/g, ' ')} />
+                  <span className="min-w-0 flex-1 truncate text-[11.5px] text-slate-200" title={n.detail}>{n.title}</span>
+                  <button className="btn-sec" disabled={ackBusy === n.id} onClick={() => ack(n.id)}>
+                    {ackBusy === n.id ? 'Acking…' : 'Acknowledge'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {ackErr && <p role="alert" className="mt-1 text-[11px] text-rose-300">{ackErr}</p>}
+          <p className="mt-2 text-[10.5px] text-slate-500">
+            Estate changes (imports, topology edits, evidence) queue an event reassessment; a scheduler
+            also re-runs detection on an interval. Acknowledge notices explicitly — they never auto-clear.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 lg:grid-cols-[1.25fr_1fr]">
         <div className="card">

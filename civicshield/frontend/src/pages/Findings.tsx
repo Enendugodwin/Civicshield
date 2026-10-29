@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, Wrench } from 'lucide-react';
+import { Bot, ChevronDown, Network, ScanSearch, Wrench } from 'lucide-react';
 import { api } from '../api';
 import { Badge, Empty, Err, Loading, Page } from '../components/ui';
 
@@ -20,6 +20,16 @@ export default function Findings() {
   const [assets, setAssets] = useState<any[]>([]);
   const [limit, setLimit] = useState(PAGE);
   const [wf, setWf] = useState({ workflow: 'acknowledged', assignee: '', reason: '' });
+  const [notice, setNotice] = useState('');
+  const [checking, setChecking] = useState(false);
+  const runArchChecks = async () => {
+    setErr(''); setChecking(true);
+    try {
+      const r = await api.post('/api/architecture/checks/raise', {});
+      setNotice(`Architecture checks: ${r.hit_count} hit${r.hit_count === 1 ? '' : 's'} — +${r.created} new, ${r.reopened} reopened, ${r.resolved_stale} resolved.`);
+      load();
+    } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setChecking(false); }
+  };
   const load = () => {
     api.get('/api/findings').then((d: any) => setItems(d.items ?? d ?? [])).catch((e) => setErr(String(e))).finally(() => setLoading(false));
   };
@@ -28,7 +38,7 @@ export default function Findings() {
     const a = assets.find((x) => String(x.id) === String(id));
     return a ? a.name || a.hostname : `Asset ${id}`;
   };
-  const sourceOf = (x: any) => x.source ?? (String(x.rule_id).startsWith('CVE-') ? 'vulnerability' : 'configuration');
+  const sourceOf = (x: any) => x.source ?? (String(x.rule_id).startsWith('CVE-') ? 'vulnerability' : String(x.rule_id).startsWith('AR-') ? 'architecture' : 'configuration');
   const filtered = useMemo(() => items.filter((x) =>
     (!sev || (x.priority ?? x.severity ?? '').toLowerCase() === sev) &&
     (!status || (x.status ?? '').toLowerCase() === status) &&
@@ -60,8 +70,14 @@ export default function Findings() {
 
   return (
     <Page title="Findings and Risk" crumb="CivicShield / Security Workflow / Findings"
-      actions={<span className="text-[10.5px] uppercase tracking-[0.07em] text-slate-500">{filtered.length} of {items.length} findings</span>}>
+      actions={<span className="flex items-center gap-2">
+        <span className="text-[10.5px] uppercase tracking-[0.07em] text-slate-500">{filtered.length} of {items.length} findings</span>
+        <button className="btn-sec" onClick={runArchChecks} disabled={checking} title="Evaluate AR-* structural checks and raise findings">
+          <ScanSearch size={12} aria-hidden="true" /> {checking ? 'Checking…' : 'Run architecture checks'}
+        </button>
+      </span>}>
       {err && <Err msg={err} />}
+      {notice && <div className="card border-emerald-500/40 text-[12px] text-emerald-200">{notice}</div>}
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <select className={sel} value={sev} onChange={(e) => setSev(e.target.value)} aria-label="Filter by priority">
           <option value="">All priorities</option><option value="critical">Critical</option><option value="high">High</option>
@@ -75,7 +91,7 @@ export default function Findings() {
           <option value="investigating">Investigating</option><option value="resolved">Resolved</option><option value="false_positive">False positive</option>
         </select>
         <select className={sel} value={source} onChange={(e) => setSource(e.target.value)} aria-label="Filter by detection source">
-          <option value="">All sources</option><option value="configuration">Configuration checks</option><option value="vulnerability">Known CVEs</option>
+          <option value="">All sources</option><option value="configuration">Configuration checks</option><option value="vulnerability">Known CVEs</option><option value="architecture">Architecture graph</option>
         </select>
       </div>
 
@@ -102,7 +118,16 @@ export default function Findings() {
                     <a className="btn-sec ml-auto shrink-0" href={`https://nvd.nist.gov/vuln/detail/${f.rule_id}`}
                       target="_blank" rel="noreferrer">NVD advisory</a>
                   )}
-                  <Link className={`btn-sec shrink-0 ${sourceOf(f) === 'vulnerability' ? '' : 'ml-auto'}`} to={`/remediation?finding=${f.id}`}>
+                  <Link className="btn-sec shrink-0" title="Ask the assistant about this finding"
+                    to={`/assistant?q=${encodeURIComponent(`Tell me about finding #${f.id}`)}`}>
+                    <Bot size={12} aria-hidden="true" /> Ask AI
+                  </Link>
+                  {sourceOf(f) === 'architecture' && (
+                    <Link className="btn-sec shrink-0" title="Open the dependency graph behind this finding" to="/map">
+                      <Network size={12} aria-hidden="true" /> Map
+                    </Link>
+                  )}
+                  <Link className={`btn-sec shrink-0 ${sourceOf(f) === 'vulnerability' || sourceOf(f) === 'architecture' ? '' : 'ml-auto'}`} to={`/remediation?finding=${f.id}`}>
                     <Wrench size={12} aria-hidden="true" /> Remediate
                   </Link>
                 </div>

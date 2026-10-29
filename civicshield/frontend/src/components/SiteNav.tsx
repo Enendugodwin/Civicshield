@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
-  Activity, Bot, FileText, Gauge, LayoutDashboard, Network, Radar, RefreshCw,
-  Server, Settings, ShieldAlert, ShieldCheck, Siren, Wrench,
+  Activity, Bot, FileEdit, FileText, Gauge, LayoutDashboard, Network, Radar, RefreshCw,
+  Server, Settings, ShieldAlert, ShieldCheck, Siren, Users, Waypoints, Wrench,
 } from 'lucide-react';
 
 type NavItem = { label: string; icon: typeof Gauge; to: string; end?: boolean };
@@ -31,8 +31,11 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { label: 'Assessments', icon: Activity, to: '/assessments' },
       { label: 'Findings & Risk', icon: ShieldAlert, to: '/findings' },
+      { label: 'Attack Paths', icon: Waypoints, to: '/attack-paths' },
+      { label: 'Proposals', icon: FileEdit, to: '/proposals' },
       { label: 'Remediation', icon: Wrench, to: '/remediation' },
       { label: 'AI Assistant', icon: Bot, to: '/assistant' },
+      { label: 'Agent Team', icon: Users, to: '/agents' },
     ],
   },
   {
