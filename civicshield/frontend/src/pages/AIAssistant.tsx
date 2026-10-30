@@ -277,8 +277,14 @@ export default function AIAssistant() {
   const actTask = async (taskId: number, action: 'approve' | 'cancel') => {
     setErr('');
     try {
-      await api.post(`/api/ai/tasks/${taskId}/${action}`, {});
-      if (cid != null) loadConv(cid);
+      const res: any = await api.post(`/api/ai/tasks/${taskId}/${action}`, {});
+      // The card embeds a snapshot of the task and the reload below restores
+      // that snapshot, so stamp the terminal state AFTER reloading.
+      const done = String(res?.status ?? (action === 'approve' ? 'completed' : 'cancelled'));
+      if (cid != null) await loadConv(cid);
+      setMsgs((prev) => prev.map((m) => m.meta?.task?.id === taskId
+        ? { ...m, meta: { ...m.meta, task: { ...m.meta.task, status: done } } }
+        : m));
     } catch (e: any) { setErr(String(e?.message ?? e)); }
   };
 
