@@ -1,5 +1,7 @@
 # CivicShield — Water Resilience Security Demo
 
+**Live demo:** [https://civicshield-orcin.vercel.app](https://civicshield-orcin.vercel.app) — try the full app in your browser, no setup needed. (Demo data resets periodically on the hosted version.)
+
 CivicShield is a demo security-operations app for a small community water
 utility: asset inventory, baseline assessments against 20 built-in rules,
 CVE findings with NVD advisories, AI-assisted remediation plans
